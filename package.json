@@ -4,7 +4,8 @@
   "description": "EcoScrap AI (E-Setu) - Smart E-Waste Collection & Recycling Platform, full-stack",
   "main": "server/server.js",
   "scripts": {
-    "start": "node server/server.js"
+    "start": "node server/server.js",
+    "sms:demo": "node scripts/sms-demo.js"
   },
   "dependencies": {
     "@libsql/client": "^0.18.0",

@@ -456,16 +456,18 @@ function renderLoginPage(container) {
             <div class="panel-soft">
               <div class="panel-soft-title">${I18N.t('kabadiAuthCardTitle')}</div>
               <p>${I18N.t('kabadiAuthCardBody')}</p>
-              <div class="desktop-grid-2">
-                <div class="form-group" style="margin-bottom:0;">
-                  <label class="form-label">${I18N.t('phoneLabel')}</label>
-                  <input type="tel" id="loginPhone" class="form-input" placeholder="${I18N.t('phonePlaceholder')}" autocomplete="off">
-                </div>
-                <div class="form-group" style="margin-bottom:0;">
-                  <label class="form-label">${I18N.t('kabadiPinLabel')}</label>
-                  <input type="password" id="loginKabadiPin" class="form-input" placeholder="${I18N.t('kabadiPinPlaceholder')}" maxlength="6" autocomplete="off">
-                </div>
+              <div class="form-group" style="margin-bottom:0;">
+                <label class="form-label">${I18N.t('phoneLabel')}</label>
+                <input type="tel" id="loginPhone" class="form-input" placeholder="${I18N.t('phonePlaceholder')}" maxlength="10" autocomplete="off">
               </div>
+            <div class="form-group" style="margin-top: 10px; margin-bottom: 14px;">
+              <button type="button" id="kabadiSendOtpBtn" class="btn-secondary" style="width: 100%; padding: 9px; font-size: 13px;" onclick="sendKabadiOtp()">📩 ${I18N.t('sendOtpBtn')}</button>
+              <div id="kabadiOtpStatus" class="form-help" style="margin-top: 6px; min-height: 14px;"></div>
+              <div id="kabadiOtpGroup" style="display: none; margin-top: 8px;">
+                <label class="form-label">${I18N.t('otpLabel')}</label>
+                <input type="text" id="kabadiOtpInput" class="form-input" inputmode="numeric" autocomplete="one-time-code" maxlength="6" placeholder="${I18N.t('otpPlaceholder')}" style="letter-spacing: 4px; font-weight: 800;" onkeydown="if(event.key==='Enter') handleLoginSubmit()">
+              </div>
+            </div>
             </div>
           ` : `
             <!-- Kabadiwala Registration -->
@@ -504,6 +506,14 @@ function renderLoginPage(container) {
                 <strong>${I18N.t('digitalScaleLabel')}</strong>
               </label>
             </div>
+            <div class="form-group" style="margin-top: 10px; margin-bottom: 14px;">
+              <button type="button" id="kabadiSendOtpBtn" class="btn-secondary" style="width: 100%; padding: 9px; font-size: 13px;" onclick="sendKabadiOtp()">📩 ${I18N.t('sendOtpBtn')}</button>
+              <div id="kabadiOtpStatus" class="form-help" style="margin-top: 6px; min-height: 14px;"></div>
+              <div id="kabadiOtpGroup" style="display: none; margin-top: 8px;">
+                <label class="form-label">${I18N.t('otpLabel')}</label>
+                <input type="text" id="kabadiOtpInput" class="form-input" inputmode="numeric" autocomplete="one-time-code" maxlength="6" placeholder="${I18N.t('otpPlaceholder')}" style="letter-spacing: 4px; font-weight: 800;" onkeydown="if(event.key==='Enter') handleLoginSubmit()">
+              </div>
+            </div>
           `) : ''}
 
           <!-- Role 3: Recycler CPCB Registration (self-service: first login = real registration) -->
@@ -531,7 +541,7 @@ function renderLoginPage(container) {
         </div>
 
         <button class="btn-primary" onclick="handleLoginSubmit()">
-          ${selectedRole === 'kabadiwala' && kabadiMode === 'register' ? I18N.t('registerBtn') : I18N.t('loginBtn')}
+          ${selectedRole === 'kabadiwala' ? (kabadiMode === 'register' ? I18N.t('verifyRegisterBtn') : I18N.t('verifySignInBtn')) : I18N.t('loginBtn')}
         </button>
       </div>
       </div>
@@ -555,6 +565,42 @@ function renderLoginPage(container) {
     kabadiMode = mode;
     markView('login');
     container.innerHTML = updateFormHtml();
+  };
+
+  // Dealer phone verification — sends a 6-digit OTP by SMS (Fast2SMS) for sign-in or registration.
+  let otpCooldownTimer = null;
+  window.sendKabadiOtp = async () => {
+    const phone = (document.getElementById('loginPhone') || {}).value || '';
+    const statusEl = document.getElementById('kabadiOtpStatus');
+    const btn = document.getElementById('kabadiSendOtpBtn');
+    if (!/^[6-9]\d{9}$/.test(phone.replace(/\D/g, '').slice(-10))) {
+      statusEl.textContent = `❌ ${I18N.t('invalidMobileMsg')}`;
+      return;
+    }
+    btn.disabled = true;
+    statusEl.textContent = '⏳';
+    try {
+      const result = await API.requestKabadiwalaOtp(phone, kabadiMode);
+      document.getElementById('kabadiOtpGroup').style.display = 'block';
+      document.getElementById('kabadiOtpInput').focus();
+      statusEl.textContent = result.demoOtp
+        ? `⚠️ ${I18N.tf('otpDemoMsg', { otp: result.demoOtp })}`
+        : `✅ ${I18N.tf('otpSentMsg', { phone })}`;
+      let left = 30;
+      clearInterval(otpCooldownTimer);
+      otpCooldownTimer = setInterval(() => {
+        const liveBtn = document.getElementById('kabadiSendOtpBtn');
+        if (!liveBtn || --left <= 0) {
+          clearInterval(otpCooldownTimer);
+          if (liveBtn) { liveBtn.disabled = false; liveBtn.textContent = `📩 ${I18N.t('resendOtpBtn')}`; }
+          return;
+        }
+        liveBtn.textContent = I18N.tf('resendOtpInMsg', { sec: left });
+      }, 1000);
+    } catch (err) {
+      btn.disabled = false;
+      statusEl.textContent = `❌ ${err.message}`;
+    }
   };
 
   // Submit handler — now talks to the real backend instead of scanning in-memory arrays
@@ -591,11 +637,12 @@ function renderLoginPage(container) {
     // 2. KABADIWALA PREDEFINED ACCESS GUARD (validated server-side against the kabadiwalas table)
     if (selectedRole === 'kabadiwala') {
       if (kabadiMode === 'login') {
-        const pinInput = document.getElementById('loginKabadiPin');
-        const pin = pinInput ? pinInput.value.trim() : '';
+        const otpInput = document.getElementById('kabadiOtpInput');
+        const otp = otpInput ? otpInput.value.trim() : '';
+        if (!otp) { alert(`📩 ${I18N.t('enterOtpFirstMsg')}`); return; }
 
         try {
-          const dealer = await API.kabadiwalaLogin(phone, pin);
+          const dealer = await API.kabadiwalaLogin(phone, otp);
           AppState.user = { role: 'kabadiwala', name: dealer.name, phone: dealer.phone, location: dealer.location, yard: dealer.yard, kabadiId: dealer.kabadiId };
           localStorage.setItem('esetu_user', JSON.stringify(AppState.user));
           // Reuse the coordinates captured at this dealer's original registration (Phase 0)
@@ -606,17 +653,21 @@ function renderLoginPage(container) {
           }
           renderApp();
         } catch (err) {
-          showKabadiAuthErrorModal(phone);
+          if (err.status === 404) showKabadiAuthErrorModal(phone);
+          else alert(`❌ ${err.message}`);
         }
         return;
       } else {
         // Register new Kabadiwala — a real row is written to the database
         const godownName = document.getElementById('regGodownName') ? document.getElementById('regGodownName').value.trim() : 'My Scrap Yard';
         const vehicleType = document.getElementById('regVehicleType') ? document.getElementById('regVehicleType').value : 'Tata Ace';
+        const otpInput = document.getElementById('kabadiOtpInput');
+        const otp = otpInput ? otpInput.value.trim() : '';
+        if (!otp) { alert(`📩 ${I18N.t('enterOtpFirstMsg')}`); return; }
 
         try {
           const coords = await getBrowserCoordinates();
-          const dealer = await API.kabadiwalaRegister({ name, phone, yard: godownName, vehicleType, location, ...(coords || {}) });
+          const dealer = await API.kabadiwalaRegister({ name, phone, otp, yard: godownName, vehicleType, location, ...(coords || {}) });
 
           // Refresh the shared cache so the new dealer shows up everywhere (nearby-dealers list, etc.)
           const fresh = await API.bootstrap();
@@ -1717,10 +1768,10 @@ window.startVoiceSelling = () => {
   recognition.start();
 };
 
-// AI Voice Assistant — composes answers from LIVE app data (current rates, real nearest
-// dealer, real safety guidance) via a small rule-based intent matcher. Not a network LLM
-// call: fully offline, deterministic, and reflects whatever the platform's data says right
-// now (e.g. answers change immediately after a recycler edits a rate).
+// AI Voice Assistant — a real conversational AI (POST /api/assistant → Gemini, see
+// server/gemini-chat.js) that answers any question, grounded in the platform's live rates,
+// dealers and safety guides. If the server AI is unavailable (no GEMINI_API_KEY, offline),
+// it falls back to this small rule-based intent matcher over the same live data.
 function matchAssistantIntent(query) {
   const text = query.toLowerCase();
 
@@ -1759,6 +1810,38 @@ function matchAssistantIntent(query) {
   return I18N.t('assistantFallbackAnswer');
 }
 
+AppState.assistantMessages = AppState.assistantMessages || []; // [{ role: 'user'|'assistant', text }]
+
+function nearestDealerSummary() {
+  if (!ESETU_DATA.kabadiwalas || !ESETU_DATA.kabadiwalas.length) return '';
+  const nearest = AppState.myCoords
+    ? ESETU_DATA.kabadiwalas.slice().sort((a, b) =>
+        GeoUtils.haversineKm(AppState.myCoords.latitude, AppState.myCoords.longitude, a.latitude, a.longitude) -
+        GeoUtils.haversineKm(AppState.myCoords.latitude, AppState.myCoords.longitude, b.latitude, b.longitude))[0]
+    : null;
+  return nearest ? `${nearest.name}, ${nearest.shopName || ''}, ${nearest.location}, ETA ${nearest.etaMinutes} min` : '';
+}
+
+function renderAssistantThread() {
+  const thread = document.getElementById('assistantThread');
+  if (!thread) return;
+  thread.innerHTML = '';
+  thread.style.display = AppState.assistantMessages.length ? 'flex' : 'none';
+  for (const msg of AppState.assistantMessages) {
+    const bubble = document.createElement('div');
+    const mine = msg.role === 'user';
+    bubble.style.cssText = `max-width: 85%; padding: 9px 12px; border-radius: 12px; font-size: 13.5px; line-height: 1.45; white-space: pre-wrap; word-wrap: break-word; align-self: ${mine ? 'flex-end' : 'flex-start'}; ${mine ? 'background: var(--primary-dark); color: #fff;' : 'background: var(--primary-light); color: var(--text-main); border: 1.5px solid var(--primary-line);'}${msg.pending ? ' opacity: 0.7; font-style: italic;' : ''}`;
+    bubble.textContent = msg.text;
+    if (!mine && !msg.pending) {
+      bubble.style.cursor = 'pointer';
+      bubble.title = '🔊';
+      bubble.onclick = () => I18N.speak(msg.text);
+    }
+    thread.appendChild(bubble);
+  }
+  thread.scrollTop = thread.scrollHeight;
+}
+
 window.openVoiceAssistantModal = () => {
   let modalContainer = document.getElementById('voiceAssistantOverlay');
   if (!modalContainer) {
@@ -1769,26 +1852,34 @@ window.openVoiceAssistantModal = () => {
 
   modalContainer.innerHTML = `
     <div class="modal-overlay">
-      <div class="modal-content" style="max-width: 480px;">
-        <button class="modal-close" onclick="document.getElementById('voiceAssistantOverlay').innerHTML=''">✕</button>
+      <div class="modal-content" style="max-width: 520px;">
+        <button class="modal-close" onclick="window.speechSynthesis && window.speechSynthesis.cancel(); document.getElementById('voiceAssistantOverlay').innerHTML=''">✕</button>
         <h3 style="font-size: 17px; font-weight: 800; color: var(--primary-dark); margin-bottom: 4px;">
           🎙️ ${I18N.t('assistantTitle')}
         </h3>
         <p style="font-size: 12.5px; color: var(--text-muted); margin-bottom: 12px;">${I18N.t('assistantSubtitle')}</p>
 
+        <div id="assistantThread" style="display: none; flex-direction: column; gap: 8px; max-height: 45vh; overflow-y: auto; margin-bottom: 12px; padding: 2px;"></div>
+
         <div style="display: flex; gap: 8px; margin-bottom: 10px;">
           <input id="assistantQueryInput" class="form-input" placeholder="${I18N.t('assistantPlaceholder')}" onkeydown="if(event.key==='Enter') askVoiceAssistant()">
           <button class="btn-secondary" style="width: auto; padding: 0 14px; border-color: var(--plum); color: var(--plum);" onclick="startAssistantVoiceInput()">🎙️</button>
         </div>
-        <button class="btn-primary" style="width: 100%; padding: 10px; font-size: 13px;" onclick="askVoiceAssistant()">
-          ${I18N.t('assistantAskBtn')}
-        </button>
-
-        <div id="assistantAnswerBox" style="margin-top: 14px; min-height: 40px; font-size: 13.5px; color: var(--text-main); background: var(--primary-light); border: 1.5px solid var(--primary-line); border-radius: var(--radius-sm); padding: 12px; display: none;"></div>
+        <div style="display: flex; gap: 8px;">
+          <button id="assistantAskBtn" class="btn-primary" style="flex: 1; padding: 10px; font-size: 13px;" onclick="askVoiceAssistant()">
+            ${I18N.t('assistantAskBtn')}
+          </button>
+          <button class="btn-secondary" style="width: auto; padding: 0 14px; font-size: 12px;" title="New chat" onclick="AppState.assistantMessages = []; renderAssistantThread()">↺</button>
+        </div>
       </div>
     </div>
   `;
+  renderAssistantThread();
+  const input = document.getElementById('assistantQueryInput');
+  if (input) input.focus();
 };
+
+window.renderAssistantThread = renderAssistantThread;
 
 window.startAssistantVoiceInput = () => {
   const recognition = createSpeechRecognizer();
@@ -1800,15 +1891,43 @@ window.startAssistantVoiceInput = () => {
   recognition.start();
 };
 
-window.askVoiceAssistant = () => {
+let assistantBusy = false;
+window.askVoiceAssistant = async () => {
   const input = document.getElementById('assistantQueryInput');
   const query = input.value.trim();
-  if (!query) return;
+  if (!query || assistantBusy) return;
+  assistantBusy = true;
+  input.value = '';
 
-  const answer = matchAssistantIntent(query);
-  const box = document.getElementById('assistantAnswerBox');
-  box.style.display = 'block';
-  box.textContent = answer;
+  const history = AppState.assistantMessages;
+  history.push({ role: 'user', text: query });
+  const pending = { role: 'assistant', text: '…', pending: true };
+  history.push(pending);
+  renderAssistantThread();
+  const askBtn = document.getElementById('assistantAskBtn');
+  if (askBtn) askBtn.disabled = true;
+
+  let answer;
+  try {
+    const { reply } = await API.askAssistant({
+      messages: history.filter((m) => !m.pending),
+      lang: I18N.currentLang,
+      clientContext: {
+        userRole: AppState.user ? AppState.user.role : 'guest',
+        nearestDealer: nearestDealerSummary()
+      }
+    });
+    answer = reply;
+  } catch (err) {
+    console.warn('[assistant] AI unavailable, using offline answers:', err.message);
+    answer = matchAssistantIntent(query);
+  }
+
+  pending.text = answer;
+  delete pending.pending;
+  assistantBusy = false;
+  if (askBtn) askBtn.disabled = false;
+  renderAssistantThread();
   I18N.speak(answer);
 };
 
@@ -3073,7 +3192,7 @@ function renderRecyclerPage(container) {
 
   window.triggerDailyPriceBroadcast = async () => {
     try {
-      const result = await API.triggerDailyPriceListBroadcast();
+      const result = await API.triggerWeeklyPriceListBroadcast();
       alert(`📩 ${I18N.tf('priceSmsBroadcastMsg', { sent: result.sentCount, total: result.total })}`);
     } catch (err) {
       alert(`❌ ${I18N.tf('broadcastFailedMsg', { error: err.message })}`);

@@ -1,9 +1,11 @@
 const express = require('express');
 const { db } = require('./db');
 const SEED_DATA = require('./seed-data');
-const { sendPriceListSms, broadcastDailyPriceList } = require('./priceNotify');
+const { sendPriceListSms, broadcastWeeklyPriceList } = require('./priceNotify');
+const { requestOtp, verifyOtp, OtpError } = require('./otp');
 const { checkCpcbRegistration } = require('./cpcb-registry');
 const { classifyScrapPhoto, isConfigured: isScannerConfigured, ScanError } = require('./gemini-scan');
+const { chat: assistantChat, isConfigured: isAssistantConfigured, ChatError } = require('./gemini-chat');
 
 const router = express.Router();
 
@@ -115,6 +117,31 @@ router.post('/scan', express.json({ limit: '8mb' }), async (req, res) => {
 });
 
 // ---------------------------------------------------------------
+// Ask EcoScrap AI — general-purpose chat assistant grounded in live platform data
+// (Gemini, see gemini-chat.js). Body: { messages: [{ role: 'user'|'assistant', text }], lang, clientContext }
+// ---------------------------------------------------------------
+router.get('/assistant/status', (req, res) => {
+  res.json({ enabled: isAssistantConfigured() });
+});
+
+router.post('/assistant', async (req, res) => {
+  try {
+    const [materials, kabadiwalas, safetyGuides] = await Promise.all([
+      db.prepare('SELECT name, symbol, customer_rate, recycler_rate, hazard_level, description FROM materials').all(),
+      db.prepare('SELECT name, location, rating FROM kabadiwalas ORDER BY id ASC').all(),
+      db.prepare('SELECT title, safe_method FROM safety_guides').all()
+    ]);
+    const { messages, lang, clientContext } = req.body || {};
+    const result = await assistantChat({ messages, lang, clientContext }, { materials, kabadiwalas, safetyGuides });
+    res.json(result);
+  } catch (err) {
+    const status = err instanceof ChatError ? err.status : 500;
+    if (!(err instanceof ChatError)) console.error('[assistant] unexpected error:', err);
+    res.status(status).json({ error: err.message });
+  }
+});
+
+// ---------------------------------------------------------------
 // GET /api/bootstrap — everything the frontend needs on load
 // ---------------------------------------------------------------
 router.get('/bootstrap', async (req, res) => {
@@ -158,21 +185,64 @@ router.get('/bootstrap', async (req, res) => {
 // ---------------------------------------------------------------
 // Auth
 // ---------------------------------------------------------------
+// Scrap dealers verify their mobile number with an SMS OTP (Fast2SMS, see otp.js):
+// purpose 'register' only for numbers NOT yet registered, 'login' only for registered ones.
+function cleanIndianMobile(phone) {
+  const digits = String(phone || '').replace(/\D/g, '').slice(-10);
+  return /^[6-9]\d{9}$/.test(digits) ? digits : null;
+}
+
+function sendOtpError(res, err) {
+  if (err instanceof OtpError) return res.status(err.status).json({ error: err.message });
+  console.error('[otp] unexpected error:', err);
+  res.status(500).json({ error: 'Something went wrong. Please try again.' });
+}
+
+router.post('/auth/kabadiwala-otp', async (req, res) => {
+  const { phone, purpose } = req.body || {};
+  const cleanPhone = cleanIndianMobile(phone);
+  if (!cleanPhone) return res.status(400).json({ error: 'Enter a valid 10-digit Indian mobile number.' });
+  if (purpose !== 'register' && purpose !== 'login') return res.status(400).json({ error: 'purpose must be "register" or "login".' });
+
+  const existing = await db.prepare('SELECT id FROM kabadiwalas WHERE phone = ?').get(cleanPhone);
+  if (purpose === 'register' && existing) return res.status(409).json({ error: 'This number is already registered. Please sign in instead.' });
+  if (purpose === 'login' && !existing) return res.status(404).json({ error: 'This number is not registered as a dealer. Please register first.' });
+
+  try {
+    res.json(await requestOtp(cleanPhone, purpose));
+  } catch (err) {
+    sendOtpError(res, err);
+  }
+});
+
 router.post('/auth/kabadiwala-login', async (req, res) => {
-  const { phone, pin } = req.body || {};
-  const cleanPhone = String(phone || '').replace(/\D/g, '');
-  const row = await db.prepare('SELECT * FROM kabadiwalas WHERE phone = ? AND pin = ?').get(cleanPhone, String(pin || ''));
-  if (!row) return res.status(401).json({ error: 'Mobile number or Dealer PIN is not authorized.' });
+  const { phone, otp } = req.body || {};
+  const cleanPhone = cleanIndianMobile(phone);
+  if (!cleanPhone) return res.status(400).json({ error: 'Enter a valid 10-digit Indian mobile number.' });
+  const row = await db.prepare('SELECT * FROM kabadiwalas WHERE phone = ?').get(cleanPhone);
+  if (!row) return res.status(404).json({ error: 'This number is not registered as a dealer. Please register first.' });
+
+  try {
+    await verifyOtp(cleanPhone, 'login', otp);
+  } catch (err) {
+    return sendOtpError(res, err);
+  }
   res.json({ role: 'kabadiwala', ...rowToKabadiwalaAuth(row) });
 });
 
 router.post('/auth/kabadiwala-register', async (req, res) => {
-  const { name, phone, yard, vehicleType, location, latitude, longitude } = req.body || {};
-  const cleanPhone = String(phone || '').replace(/\D/g, '');
-  if (!cleanPhone || !name) return res.status(400).json({ error: 'Name and phone are required.' });
+  const { name, phone, otp, yard, vehicleType, location, latitude, longitude } = req.body || {};
+  const cleanPhone = cleanIndianMobile(phone);
+  if (!cleanPhone || !name) return res.status(400).json({ error: 'Name and a valid 10-digit mobile number are required.' });
 
   const existing = await db.prepare('SELECT id FROM kabadiwalas WHERE phone = ?').get(cleanPhone);
   if (existing) return res.status(409).json({ error: 'A dealer with this phone number is already registered.' });
+
+  try {
+    await verifyOtp(cleanPhone, 'register', otp);
+  } catch (err) {
+    return sendOtpError(res, err);
+  }
 
   const hasCoords = typeof latitude === 'number' && typeof longitude === 'number';
   const kabadiId = `KAB-REG-${Math.floor(1000 + Math.random() * 9000)}`;
@@ -778,8 +848,9 @@ router.patch('/contracts/:id/switch', async (req, res) => {
 });
 
 // ---------------------------------------------------------------
-// Price-list SMS — resend on demand, or trigger the daily broadcast now
-// (the real broadcast also fires automatically every morning; see server/scheduler.js)
+// Recycler price-list SMS to dealers — resend on demand, or trigger the weekly broadcast now
+// (it also fires automatically once a week: server/scheduler.js locally/Render, the
+// vercel.json cron on Vercel)
 // ---------------------------------------------------------------
 router.post('/kabadiwalas/:kabadiId/send-price-sms', async (req, res) => {
   const row = await db.prepare('SELECT * FROM kabadiwalas WHERE kabadi_id = ?').get(req.params.kabadiId);
@@ -789,9 +860,20 @@ router.post('/kabadiwalas/:kabadiId/send-price-sms', async (req, res) => {
   res.json(result);
 });
 
-router.post('/notifications/send-daily-price-list', async (req, res) => {
-  const results = await broadcastDailyPriceList();
+async function runWeeklyBroadcast(req, res) {
+  const results = await broadcastWeeklyPriceList();
   res.json({ sentCount: results.filter(r => r.sent).length, total: results.length, results });
+}
+
+router.post('/notifications/send-weekly-price-list', runWeeklyBroadcast);
+router.post('/notifications/send-daily-price-list', runWeeklyBroadcast); // old name, kept for compatibility
+
+// Vercel Cron calls this with GET + "Authorization: Bearer $CRON_SECRET".
+router.get('/cron/weekly-price-list', (req, res) => {
+  if (!process.env.CRON_SECRET || req.get('authorization') !== `Bearer ${process.env.CRON_SECRET}`) {
+    return res.status(401).json({ error: 'Unauthorized.' });
+  }
+  runWeeklyBroadcast(req, res);
 });
 
 // ---------------------------------------------------------------

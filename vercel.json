@@ -4,6 +4,9 @@
       "includeFiles": "{css/**,js/**,icons/**,index.html,manifest.json,sw.js}"
     }
   },
+  "crons": [
+    { "path": "/api/cron/weekly-price-list", "schedule": "30 2 * * 1" }
+  ],
   "rewrites": [
     { "source": "/(.*)", "destination": "/api/index" }
   ]

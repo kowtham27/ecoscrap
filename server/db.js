@@ -182,6 +182,17 @@ async function createSchema() {
       recorded_at TEXT NOT NULL
     );
     CREATE INDEX IF NOT EXISTS idx_rate_history_material ON rate_history(material_id, recorded_at);
+
+    -- One pending OTP per phone+purpose; only a salted hash of the code is stored.
+    CREATE TABLE IF NOT EXISTS otp_codes (
+      phone TEXT NOT NULL,
+      purpose TEXT NOT NULL,
+      code_hash TEXT NOT NULL,
+      expires_at TEXT NOT NULL,
+      attempts INTEGER NOT NULL DEFAULT 0,
+      last_sent_at TEXT NOT NULL,
+      PRIMARY KEY (phone, purpose)
+    );
   `);
 }
 

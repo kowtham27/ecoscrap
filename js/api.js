@@ -18,7 +18,8 @@ const API = {
 
   bootstrap() { return this._send('GET', '/api/bootstrap'); },
 
-  kabadiwalaLogin(phone, pin) { return this._send('POST', '/api/auth/kabadiwala-login', { phone, pin }); },
+  requestKabadiwalaOtp(phone, purpose) { return this._send('POST', '/api/auth/kabadiwala-otp', { phone, purpose }); },
+  kabadiwalaLogin(phone, otp) { return this._send('POST', '/api/auth/kabadiwala-login', { phone, otp }); },
   kabadiwalaRegister(payload) { return this._send('POST', '/api/auth/kabadiwala-register', payload); },
   recyclerLogin(payload) { return this._send('POST', '/api/auth/recycler-login', payload); },
 
@@ -38,6 +39,7 @@ const API = {
   },
 
   scanScrapPhoto(imageDataUrl) { return this._send('POST', '/api/scan', { imageDataUrl }); },
+  askAssistant(payload) { return this._send('POST', '/api/assistant', payload); },
 
   createBooking(payload) { return this._send('POST', '/api/bookings', payload); },
   // body: { confirmedBy: 'customer' | 'dealer', otp, weighedKg, amountPaid, acceptShortfall, dispute }
@@ -64,7 +66,7 @@ const API = {
   switchContract(id, payload) { return this._send('PATCH', `/api/contracts/${encodeURIComponent(id)}/switch`, payload); },
 
   sendPriceListSms(kabadiId) { return this._send('POST', `/api/kabadiwalas/${encodeURIComponent(kabadiId)}/send-price-sms`); },
-  triggerDailyPriceListBroadcast() { return this._send('POST', '/api/notifications/send-daily-price-list'); },
+  triggerWeeklyPriceListBroadcast() { return this._send('POST', '/api/notifications/send-weekly-price-list'); },
 
   listMessages(kabadiwalaId, recyclerId) {
     const qs = new URLSearchParams({ kabadiwalaId, recyclerId }).toString();

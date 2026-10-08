@@ -4,7 +4,7 @@ const path = require('node:path');
 const express = require('express');
 const { initDb } = require('./db');
 const apiRouter = require('./api');
-const { startDailyPriceListScheduler } = require('./scheduler');
+const { startWeeklyPriceListScheduler } = require('./scheduler');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -29,14 +29,14 @@ initDb()
       console.log(`EcoScrap AI server running at http://localhost:${PORT}`);
       console.log(`  [db] ${process.env.TURSO_DATABASE_URL ? 'Turso (remote)' : 'local file (data/esetu.db)'}`);
       if (!process.env.FAST2SMS_API_KEY) {
-        console.log('  [sms] FAST2SMS_API_KEY not set in .env — price-list SMS will be skipped (logged, not sent).');
+        console.log('  [sms] FAST2SMS_API_KEY not set in .env — price-list & OTP SMS will be skipped (logged, not sent).');
       }
       if (process.env.GEMINI_API_KEY) {
         console.log(`  [scan] On-device YOLO scanner + Gemini grading (${process.env.GEMINI_MODEL || 'gemini-3.8-flash'})`);
       } else {
         console.log('  [scan] GEMINI_API_KEY not set — on-device YOLO still identifies materials; condition grading is skipped.');
       }
-      startDailyPriceListScheduler();
+      startWeeklyPriceListScheduler();
     });
   })
   .catch((err) => {
