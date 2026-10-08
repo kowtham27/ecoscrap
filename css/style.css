@@ -1175,3 +1175,10 @@ html:not([lang="en"]) .stock-ticker-table th { letter-spacing: 0; text-transform
 .scan-head:has(.scan-spinner) { justify-content: flex-start; }
 @keyframes spin { to { transform: rotate(360deg); } }
 @media (max-width: 480px) { .scan-card { grid-template-columns: 64px 1fr; } .scan-thumb { width: 64px; height: 64px; } }
+
+/* YOLO-first scanner extras */
+.scan-pick button.likely { border-color: var(--primary); box-shadow: inset 0 0 0 1px var(--primary); }
+.scan-spinner.sm { width: 11px; height: 11px; border-width: 2px; display: inline-block; vertical-align: -1px; margin-right: 5px; }
+.scan-second { margin-top: 8px; font-size: 12.5px; color: var(--ink-2); display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.scan-second button { border: 1px solid var(--border-strong); background: var(--card); border-radius: var(--radius-full); padding: 4px 10px; font: 600 12px var(--f-body); cursor: pointer; }
+.scan-second button:hover { background: var(--ink); color: var(--paper); }

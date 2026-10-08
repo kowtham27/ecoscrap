@@ -19,6 +19,12 @@ const I18N = {
   translations: {
     // 1. PURE ENGLISH (Zero Hindi/Marathi words mixed in)
     en: {
+      // --- on-device YOLO scanner ---
+      checkingConditionLabel: "Checking condition…",
+      gradeAtDoorNote: "Condition will be graded by the collector at your door.",
+      secondOpinionLabel: "Could also be:",
+      scanByYolo: "Identified on your device by YOLO ({ms} ms) — free, works offline.",
+      scanGradeByGemini: "Condition graded by Gemini.",
       // --- AI scrap scanner (camera + Gemini) ---
       cameraStartingMsg: "Starting camera…",
       cameraDeniedMsg: "Camera permission was blocked. Allow camera access in the browser address bar, or use your phone's camera app instead.",
@@ -44,7 +50,7 @@ const I18N = {
       scanUnsureMsg: "Not fully sure — please confirm what it is:",
       useEstimatedWeightBtn: "Use estimated {kg} kg",
       wrongMaterialLink: "Wrong item? Change it",
-      scanPoweredBy: "Identified by Google {model}. Final price is confirmed when the collector weighs it.",
+      scanPoweredBy: "Identified by {model}. Final price is confirmed when the collector weighs it.",
       // --- redesign + Secure Payment + Price History ---
       areaPincodeLabel: "Area pincode",
       dayOfWeekLabel: "Collection day",
@@ -570,6 +576,12 @@ const I18N = {
 
     // 2. MARATHI (मराठी)
     mr: {
+      // --- on-device YOLO scanner ---
+      checkingConditionLabel: "स्थिती तपासत आहोत…",
+      gradeAtDoorNote: "स्थितीची श्रेणी संग्राहक दारात ठरवेल.",
+      secondOpinionLabel: "हेही असू शकते:",
+      scanByYolo: "तुमच्या डिव्हाइसवर YOLO ने ओळखले ({ms} ms) — मोफत, ऑफलाइनही चालते.",
+      scanGradeByGemini: "स्थितीची श्रेणी Gemini ने ठरवली.",
       // --- AI scrap scanner (camera + Gemini) ---
       cameraStartingMsg: "कॅमेरा सुरू होत आहे…",
       cameraDeniedMsg: "कॅमेरा परवानगी नाकारली आहे. ब्राउझरच्या अ‍ॅड्रेस बारमध्ये परवानगी द्या, किंवा फोनचे कॅमेरा अ‍ॅप वापरा.",
@@ -595,7 +607,7 @@ const I18N = {
       scanUnsureMsg: "पूर्ण खात्री नाही — कृपया हे काय आहे ते निश्चित करा:",
       useEstimatedWeightBtn: "अंदाजे {kg} किलो वापरा",
       wrongMaterialLink: "चुकीची वस्तू? बदला",
-      scanPoweredBy: "Google {model} ने ओळखले. अंतिम भाव संग्राहक वजन केल्यावर ठरेल.",
+      scanPoweredBy: "{model} ने ओळखले. अंतिम भाव संग्राहक वजन केल्यावर ठरेल.",
       // --- redesign + Secure Payment + Price History ---
       areaPincodeLabel: "क्षेत्र पिनकोड",
       dayOfWeekLabel: "संकलनाचा दिवस",
@@ -1085,6 +1097,12 @@ const I18N = {
 
     // 3. HINDI (हिन्दी)
     hi: {
+      // --- on-device YOLO scanner ---
+      checkingConditionLabel: "हालत जाँची जा रही है…",
+      gradeAtDoorNote: "हालत की ग्रेडिंग कलेक्टर आपके दरवाज़े पर करेगा।",
+      secondOpinionLabel: "यह भी हो सकता है:",
+      scanByYolo: "आपके डिवाइस पर YOLO ने पहचाना ({ms} ms) — मुफ़्त, ऑफ़लाइन भी चलता है।",
+      scanGradeByGemini: "हालत की ग्रेडिंग Gemini ने की।",
       // --- AI scrap scanner (camera + Gemini) ---
       cameraStartingMsg: "कैमरा चालू हो रहा है…",
       cameraDeniedMsg: "कैमरा अनुमति रोकी गई है। ब्राउज़र के एड्रेस बार में कैमरा की अनुमति दें, या फ़ोन का कैमरा ऐप इस्तेमाल करें।",
@@ -1110,7 +1128,7 @@ const I18N = {
       scanUnsureMsg: "पूरी तरह निश्चित नहीं — कृपया पुष्टि करें यह क्या है:",
       useEstimatedWeightBtn: "अनुमानित {kg} किलो लें",
       wrongMaterialLink: "गलत सामान? बदलें",
-      scanPoweredBy: "Google {model} द्वारा पहचाना गया। अंतिम दाम कलेक्टर के तौलने पर तय होगा।",
+      scanPoweredBy: "{model} द्वारा पहचाना गया। अंतिम दाम कलेक्टर के तौलने पर तय होगा।",
       // --- redesign + Secure Payment + Price History ---
       areaPincodeLabel: "क्षेत्र पिनकोड",
       dayOfWeekLabel: "संग्रह का दिन",
@@ -1600,6 +1618,12 @@ const I18N = {
 
     // 4. TAMIL (தமிழ்)
     ta: {
+      // --- on-device YOLO scanner ---
+      checkingConditionLabel: "நிலையைச் சரிபார்க்கிறது…",
+      gradeAtDoorNote: "நிலையைச் சேகரிப்பாளர் உங்கள் வாசலில் மதிப்பிடுவார்.",
+      secondOpinionLabel: "இதுவாகவும் இருக்கலாம்:",
+      scanByYolo: "உங்கள் சாதனத்தில் YOLO அடையாளம் கண்டது ({ms} ms) — இலவசம், இணையமின்றியும் இயங்கும்.",
+      scanGradeByGemini: "நிலை Gemini மூலம் மதிப்பிடப்பட்டது.",
       // --- AI scrap scanner (camera + Gemini) ---
       cameraStartingMsg: "கேமரா தொடங்குகிறது…",
       cameraDeniedMsg: "கேமரா அனுமதி தடுக்கப்பட்டது. உலாவியில் அனுமதி தரவும் அல்லது போனின் கேமரா செயலியைப் பயன்படுத்தவும்.",
@@ -1625,7 +1649,7 @@ const I18N = {
       scanUnsureMsg: "முழு உறுதி இல்லை — இது என்ன என்று உறுதிசெய்யுங்கள்:",
       useEstimatedWeightBtn: "மதிப்பிட்ட {kg} கிலோ பயன்படுத்து",
       wrongMaterialLink: "தவறான பொருளா? மாற்று",
-      scanPoweredBy: "Google {model} அடையாளம் கண்டது. சேகரிப்பாளர் எடை போட்டதும் இறுதி விலை உறுதியாகும்.",
+      scanPoweredBy: "{model} அடையாளம் கண்டது. சேகரிப்பாளர் எடை போட்டதும் இறுதி விலை உறுதியாகும்.",
       // --- redesign + Secure Payment + Price History ---
       areaPincodeLabel: "பகுதி அஞ்சல் குறியீடு",
       dayOfWeekLabel: "சேகரிப்பு நாள்",
@@ -2115,6 +2139,12 @@ const I18N = {
 
     // 5. TELUGU (తెలుగు)
     te: {
+      // --- on-device YOLO scanner ---
+      checkingConditionLabel: "స్థితిని తనిఖీ చేస్తోంది…",
+      gradeAtDoorNote: "స్థితిని కలెక్టర్ మీ ఇంటి వద్దే గ్రేడ్ చేస్తారు.",
+      secondOpinionLabel: "ఇది కూడా కావచ్చు:",
+      scanByYolo: "మీ పరికరంలో YOLO గుర్తించింది ({ms} ms) — ఉచితం, ఆఫ్‌లైన్‌లోనూ పనిచేస్తుంది.",
+      scanGradeByGemini: "స్థితిని Gemini గ్రేడ్ చేసింది.",
       // --- AI scrap scanner (camera + Gemini) ---
       cameraStartingMsg: "కెమెరా ప్రారంభమవుతోంది…",
       cameraDeniedMsg: "కెమెరా అనుమతి నిరోధించబడింది. బ్రౌజర్‌లో అనుమతి ఇవ్వండి లేదా ఫోన్ కెమెరా యాప్ వాడండి.",
@@ -2140,7 +2170,7 @@ const I18N = {
       scanUnsureMsg: "పూర్తిగా ఖచ్చితం కాదు — ఇది ఏమిటో నిర్ధారించండి:",
       useEstimatedWeightBtn: "అంచనా {kg} కిలో వాడు",
       wrongMaterialLink: "తప్పు వస్తువా? మార్చండి",
-      scanPoweredBy: "Google {model} గుర్తించింది. కలెక్టర్ తూకం వేశాక తుది ధర నిర్ధారణ.",
+      scanPoweredBy: "{model} గుర్తించింది. కలెక్టర్ తూకం వేశాక తుది ధర నిర్ధారణ.",
       // --- redesign + Secure Payment + Price History ---
       areaPincodeLabel: "ప్రాంత పిన్‌కోడ్",
       dayOfWeekLabel: "సేకరణ రోజు",
@@ -2630,6 +2660,12 @@ const I18N = {
 
     // 6. KANNADA (ಕನ್ನಡ)
     kn: {
+      // --- on-device YOLO scanner ---
+      checkingConditionLabel: "ಸ್ಥಿತಿ ಪರಿಶೀಲಿಸಲಾಗುತ್ತಿದೆ…",
+      gradeAtDoorNote: "ಸ್ಥಿತಿಯನ್ನು ಸಂಗ್ರಾಹಕರು ನಿಮ್ಮ ಬಾಗಿಲಲ್ಲೇ ಶ್ರೇಣೀಕರಿಸುತ್ತಾರೆ.",
+      secondOpinionLabel: "ಇದೂ ಆಗಿರಬಹುದು:",
+      scanByYolo: "ನಿಮ್ಮ ಸಾಧನದಲ್ಲೇ YOLO ಗುರುತಿಸಿದೆ ({ms} ms) — ಉಚಿತ, ಆಫ್‌ಲೈನ್‌ನಲ್ಲೂ ಕೆಲಸ ಮಾಡುತ್ತದೆ.",
+      scanGradeByGemini: "ಸ್ಥಿತಿಯನ್ನು Gemini ಶ್ರೇಣೀಕರಿಸಿದೆ.",
       // --- AI scrap scanner (camera + Gemini) ---
       cameraStartingMsg: "ಕ್ಯಾಮೆರಾ ಆರಂಭವಾಗುತ್ತಿದೆ…",
       cameraDeniedMsg: "ಕ್ಯಾಮೆರಾ ಅನುಮತಿ ತಡೆಯಲಾಗಿದೆ. ಬ್ರೌಸರ್‌ನಲ್ಲಿ ಅನುಮತಿ ನೀಡಿ ಅಥವಾ ಫೋನ್ ಕ್ಯಾಮೆರಾ ಆ್ಯಪ್ ಬಳಸಿ.",
@@ -2655,7 +2691,7 @@ const I18N = {
       scanUnsureMsg: "ಸಂಪೂರ್ಣ ಖಚಿತವಿಲ್ಲ — ಇದೇನು ಎಂದು ದೃಢೀಕರಿಸಿ:",
       useEstimatedWeightBtn: "ಅಂದಾಜು {kg} ಕಿಲೋ ಬಳಸಿ",
       wrongMaterialLink: "ತಪ್ಪು ವಸ್ತುವೇ? ಬದಲಿಸಿ",
-      scanPoweredBy: "Google {model} ಗುರುತಿಸಿದೆ. ಸಂಗ್ರಾಹಕರು ತೂಕ ಮಾಡಿದಾಗ ಅಂತಿಮ ದರ ದೃಢವಾಗುತ್ತದೆ.",
+      scanPoweredBy: "{model} ಗುರುತಿಸಿದೆ. ಸಂಗ್ರಾಹಕರು ತೂಕ ಮಾಡಿದಾಗ ಅಂತಿಮ ದರ ದೃಢವಾಗುತ್ತದೆ.",
       // --- redesign + Secure Payment + Price History ---
       areaPincodeLabel: "ಪ್ರದೇಶದ ಪಿನ್‌ಕೋಡ್",
       dayOfWeekLabel: "ಸಂಗ್ರಹ ದಿನ",
@@ -3145,6 +3181,12 @@ const I18N = {
 
     // 7. MALAYALAM (മലയാളം)
     ml: {
+      // --- on-device YOLO scanner ---
+      checkingConditionLabel: "അവസ്ഥ പരിശോധിക്കുന്നു…",
+      gradeAtDoorNote: "അവസ്ഥ കളക്ടർ വാതിൽക്കൽ ഗ്രേഡ് ചെയ്യും.",
+      secondOpinionLabel: "ഇതും ആകാം:",
+      scanByYolo: "നിങ്ങളുടെ ഉപകരണത്തിൽ YOLO തിരിച്ചറിഞ്ഞു ({ms} ms) — സൗജന്യം, ഓഫ്‌ലൈനിലും പ്രവർത്തിക്കും.",
+      scanGradeByGemini: "അവസ്ഥ Gemini ഗ്രേഡ് ചെയ്തു.",
       // --- AI scrap scanner (camera + Gemini) ---
       cameraStartingMsg: "ക്യാമറ ആരംഭിക്കുന്നു…",
       cameraDeniedMsg: "ക്യാമറ അനുമതി തടഞ്ഞു. ബ്രൗസറിൽ അനുമതി നൽകുക അല്ലെങ്കിൽ ഫോണിന്റെ ക്യാമറ ആപ്പ് ഉപയോഗിക്കുക.",
@@ -3170,7 +3212,7 @@ const I18N = {
       scanUnsureMsg: "പൂർണ്ണ ഉറപ്പില്ല — ഇത് എന്താണെന്ന് സ്ഥിരീകരിക്കുക:",
       useEstimatedWeightBtn: "കണക്കാക്കിയ {kg} കിലോ ഉപയോഗിക്കുക",
       wrongMaterialLink: "തെറ്റായ സാധനമോ? മാറ്റുക",
-      scanPoweredBy: "Google {model} തിരിച്ചറിഞ്ഞു. കളക്ടർ തൂക്കുമ്പോൾ അന്തിമ വില ഉറപ്പാകും.",
+      scanPoweredBy: "{model} തിരിച്ചറിഞ്ഞു. കളക്ടർ തൂക്കുമ്പോൾ അന്തിമ വില ഉറപ്പാകും.",
       // --- redesign + Secure Payment + Price History ---
       areaPincodeLabel: "പ്രദേശ പിൻകോഡ്",
       dayOfWeekLabel: "ശേഖരണ ദിവസം",

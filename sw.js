@@ -3,11 +3,12 @@
 // latest code first, only falling back to the cached copy if offline. This
 // app is actively updated, so a cache-first strategy would silently trap
 // users on old/broken code with no way to see fixes go live.
-const CACHE_NAME = 'ecoscrap-shell-v4';
+const CACHE_NAME = 'ecoscrap-shell-v5';
 const SHELL_FILES = [
   '/', '/index.html', '/css/style.css',
   '/js/api.js', '/js/i18n.js', '/js/app.js', '/js/priceUtils.js', '/js/geoUtils.js',
-  '/js/price-history.js', '/js/secure-payment.js', '/js/scrap-scanner.js',
+  '/js/price-history.js', '/js/secure-payment.js', '/js/scrap-scanner.js', '/js/yolo-scrap.js',
+  '/vendor/onnxruntime-web/ort.wasm.min.js',
   '/manifest.json',
   '/icons/icon-192.png', '/icons/icon-512.png'
 ];

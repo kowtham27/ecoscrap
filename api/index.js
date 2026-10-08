@@ -27,6 +27,9 @@ app.use((req, res, next) => {
 app.use('/api', apiRouter);
 
 const PROJECT_ROOT = path.join(__dirname, '..');
+// The frontend is served straight from the project root, so keep the database, installed
+// packages and server code from being downloadable (data/esetu.db holds dealer PINs).
+app.use(['/data', '/node_modules', '/server', '/api'], (req, res) => res.status(404).end());
 app.use(express.static(PROJECT_ROOT));
 
 app.get('*', (req, res) => {

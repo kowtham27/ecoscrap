@@ -22,10 +22,12 @@ npm start
 # Then visit http://localhost:3000
 ```
 
-To turn on the AI Scrap Scanner, copy `.env.example` to `.env` and set `GEMINI_API_KEY`
-(free key from https://aistudio.google.com/apikey), then restart the server. The camera opens
-in-page on `localhost` or any `https://` address; on a phone opening the app over plain
-`http://` on your LAN, the button opens the phone's own camera app instead.
+The AI Scrap Scanner works with no setup: a YOLO11s model runs in the browser and identifies the
+material for free, even offline (details and accuracy in `models/README.md`). Optionally set
+`GEMINI_API_KEY` in `.env` (the free tier is fine) so Gemini adds a condition grade and description
+and answers when YOLO is unsure. The camera opens in-page on `localhost` or any `https://` address;
+on a phone opening the app over plain `http://` on your LAN, the button opens the phone's own
+camera app instead.
 
 Data (materials & rates, registered kabadiwalas/recyclers, lots/transactions, safety guides) lives in `data/esetu.db` and survives server restarts. The database is seeded once from `server/seed-data.js` the first time it's created.
 
@@ -44,7 +46,7 @@ through the app, so there is no fixed demo PIN to share.
 
 All 28 features pitched across the 8 innovation categories are real and working — not
 static mocks. Notably:
-- **AI Scrap Scanner & Quality Checker** — in-page camera capture, then Google Gemini identifies the item, maps it to one of the platform's materials and grades its condition (`js/scrap-scanner.js`, `server/gemini-scan.js`). Needs `GEMINI_API_KEY` in `.env` and internet; without it the customer picks the material by hand
+- **AI Scrap Scanner & Quality Checker** — in-page camera capture, then an on-device YOLO11s model (free, offline, `js/yolo-scrap.js`) identifies the material; Gemini's free tier optionally adds the condition grade and a second opinion (`server/gemini-scan.js`). Low-confidence scans ask the customer to confirm instead of guessing
 - **Fair Price Detector / Fraud-Free Payments** — flags offers that drift from the benchmark rate
 - **Smart Weighing** — an honestly-labeled Bluetooth-scale *simulation* (no real hardware exists to integrate)
 - **Digital Scrap Passport & Verified Handover** — real GPS + photo captured at pickup, persisted per booking

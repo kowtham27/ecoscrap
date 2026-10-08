@@ -93,7 +93,8 @@ function rowToSafetyGuide(row) {
 }
 
 // ---------------------------------------------------------------
-// AI Scrap Scanner — photo in, material + grade out (Gemini, see gemini-scan.js).
+// AI Scrap Scanner — server-side second opinion (Gemini, see gemini-scan.js). The material
+// itself is identified on the device by YOLO (js/yolo-scrap.js); this adds grade + description.
 // The photo itself is not stored here; it only gets attached to a booking later as
 // handover proof, the same as before.
 // ---------------------------------------------------------------

@@ -701,6 +701,7 @@ function renderCustomerPage(container) {
 
   if (AppState.customerTab === 'sell') {
     renderCustomerSellTab(container, tabNavHtml);
+    YoloScrap.warmUp(); // fetch the on-device scanner model before the first photo
   } else if (AppState.customerTab === 'dealers') {
     renderCustomerDealersTab(container, tabNavHtml);
   } else {

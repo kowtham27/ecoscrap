@@ -6,7 +6,10 @@
 
 const GEMINI_ENDPOINT = 'https://generativelanguage.googleapis.com/v1beta/models';
 const DEFAULT_MODEL = 'gemini-3.8-flash';
-const REQUEST_TIMEOUT_MS = 25000;
+// Used when the main model is overloaded (Google returns 503 "high demand" during spikes).
+const DEFAULT_FALLBACK_MODEL = 'gemini-3.5-flash-lite';
+const REQUEST_TIMEOUT_MS = 20000;
+const TOTAL_BUDGET_MS = 40000;
 
 // Same grade -> payout multiplier table the calculator already used.
 const GRADES = {
@@ -71,7 +74,41 @@ function parseDataUrl(dataUrl) {
 }
 
 class ScanError extends Error {
-  constructor(message, status = 502) { super(message); this.status = status; }
+  constructor(message, status = 502, transient = false) { super(message); this.status = status; this.transient = transient; }
+}
+
+async function callGemini(model, body) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
+  let res;
+  try {
+    res = await fetch(`${GEMINI_ENDPOINT}/${encodeURIComponent(model)}:generateContent`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'x-goog-api-key': process.env.GEMINI_API_KEY },
+      body: JSON.stringify(body),
+      signal: controller.signal
+    });
+  } catch (err) {
+    if (err.name === 'AbortError') throw new ScanError('The AI scanner took too long to respond. Try again.', 504, true);
+    throw new ScanError(`Could not reach Gemini: ${err.message}`, 502, true);
+  } finally {
+    clearTimeout(timer);
+  }
+
+  const payload = await res.json().catch(() => ({}));
+  if (!res.ok) {
+    const detail = payload.error && payload.error.message ? payload.error.message : `HTTP ${res.status}`;
+    console.error(`[scan] Gemini ${model} error:`, res.status, detail);
+    if (res.status === 503 || res.status === 500 || res.status === 504) {
+      throw new ScanError('The AI scanner is very busy right now. Please try again in a moment.', 503, true);
+    }
+    if (res.status === 404) throw new ScanError(`Gemini model "${model}" was not found — check GEMINI_MODEL in .env.`, 502, true);
+    // Quota is counted per model, so a 429 is worth retrying on the fallback model.
+    if (res.status === 429) throw new ScanError('AI scanner quota reached. Try again in a minute.', 429, true);
+    if (res.status === 400 || res.status === 401 || res.status === 403) throw new ScanError(`Gemini rejected the request: ${detail}`, 502);
+    throw new ScanError(`Gemini error: ${detail}`);
+  }
+  return payload;
 }
 
 async function classifyScrapPhoto(imageDataUrl, materials) {
@@ -81,7 +118,13 @@ async function classifyScrapPhoto(imageDataUrl, materials) {
   const image = parseDataUrl(imageDataUrl);
   if (!image) throw new ScanError('Send the photo as a JPEG/PNG/WebP data URL.', 400);
 
-  const model = process.env.GEMINI_MODEL || DEFAULT_MODEL;
+  const primary = process.env.GEMINI_MODEL || DEFAULT_MODEL;
+  const fallback = process.env.GEMINI_FALLBACK_MODEL || DEFAULT_FALLBACK_MODEL;
+  // Overload/5xx are transient: retry the main model once after a short pause, then try the
+  // lighter fallback model. Anything else (bad key, bad request, quota) fails straight away.
+  const attempts = [primary, primary, ...(fallback && fallback !== primary ? [fallback] : [])];
+  const startedAt = Date.now();
+
   const body = {
     contents: [{
       role: 'user',
@@ -97,30 +140,22 @@ async function classifyScrapPhoto(imageDataUrl, materials) {
     }
   };
 
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
-  let res;
-  try {
-    res = await fetch(`${GEMINI_ENDPOINT}/${encodeURIComponent(model)}:generateContent`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'x-goog-api-key': process.env.GEMINI_API_KEY },
-      body: JSON.stringify(body),
-      signal: controller.signal
-    });
-  } catch (err) {
-    throw new ScanError(err.name === 'AbortError' ? 'The AI scanner took too long to respond. Try again.' : `Could not reach Gemini: ${err.message}`);
-  } finally {
-    clearTimeout(timer);
+  let payload, model, lastError;
+  for (let i = 0; i < attempts.length; i++) {
+    if (i > 0 && Date.now() - startedAt > TOTAL_BUDGET_MS - REQUEST_TIMEOUT_MS) break;
+    if (i === 1) await new Promise((r) => setTimeout(r, 1200));
+    model = attempts[i];
+    try {
+      payload = await callGemini(model, body);
+      lastError = null;
+      break;
+    } catch (err) {
+      lastError = err;
+      if (!err.transient) break;
+      console.warn(`[scan] ${model} unavailable (${err.message}) — ${i + 1 < attempts.length ? 'retrying' : 'giving up'}`);
+    }
   }
-
-  const payload = await res.json().catch(() => ({}));
-  if (!res.ok) {
-    const detail = payload.error && payload.error.message ? payload.error.message : `HTTP ${res.status}`;
-    console.error('[scan] Gemini error:', res.status, detail);
-    if (res.status === 429) throw new ScanError('AI scanner is busy (rate limit reached). Try again in a minute.', 429);
-    if (res.status === 400 || res.status === 403) throw new ScanError(`Gemini rejected the request: ${detail}`, 502);
-    throw new ScanError(`Gemini error: ${detail}`);
-  }
+  if (lastError) throw lastError;
 
   const candidate = payload.candidates && payload.candidates[0];
   const text = candidate && candidate.content && candidate.content.parts

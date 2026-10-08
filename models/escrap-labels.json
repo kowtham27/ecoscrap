@@ -1,0 +1,24 @@
+{
+  "imgsz": 224,
+  "classes": [
+    "copper_wire",
+    "crt",
+    "lcd",
+    "li_battery",
+    "motor",
+    "other",
+    "pcb",
+    "plastic"
+  ],
+  "materialByClass": {
+    "copper_wire": "mat-copper-wire",
+    "crt": "mat-crt-monitors",
+    "lcd": "mat-lcd-led",
+    "li_battery": "mat-li-battery",
+    "motor": "mat-electric-motors",
+    "other": null,
+    "pcb": "mat-pcb-high",
+    "plastic": "mat-e-plastics"
+  },
+  "temperature": 2.45
+}
