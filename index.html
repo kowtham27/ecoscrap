@@ -11,9 +11,9 @@
        app shell works offline (see js/app.js openHotspotMap for the disclosed fallback). -->
   <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css">
   <script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"></script>
-  <link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>♻️</text></svg>">
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 40 40%22><rect width=%2240%22 height=%2240%22 rx=%2211%22 fill=%22%231d2119%22/><path d=%22M28.5 14.5a10 10 0 1 0 1.2 9.2%22 fill=%22none%22 stroke=%22%23f4efe4%22 stroke-width=%223.2%22 stroke-linecap=%22round%22/><circle cx=%2220%22 cy=%2220%22 r=%223.6%22 fill=%22%23d98a1c%22/></svg>">
   <link rel="manifest" href="/manifest.json">
-  <meta name="theme-color" content="#15803d">
+  <meta name="theme-color" content="#1d2119">
   <link rel="apple-touch-icon" href="/icons/icon-192.png">
   <meta name="mobile-web-app-capable" content="yes">
   <meta name="apple-mobile-web-app-capable" content="yes">
@@ -21,23 +21,27 @@
 </head>
 <body>
 
-  <!-- Full-Width Web Platform Container -->
   <div class="app-container">
-    
-    <!-- Top Sticky Header Navigation Bar -->
+
     <header class="app-header">
       <div class="header-top">
         <div class="brand">
-          <div class="brand-icon">♻️</div>
+          <!-- Mark: a scrap loop closing back on itself, with a marigold "price" dot -->
+          <svg class="brand-mark" viewBox="0 0 40 40" aria-hidden="true">
+            <rect width="40" height="40" rx="11" fill="#1d2119"/>
+            <path d="M28.5 14.5a10 10 0 1 0 1.2 9.2" fill="none" stroke="#f4efe4" stroke-width="3.2" stroke-linecap="round"/>
+            <path d="M24.4 13.2l4.6 1.6-1.4 4.7" fill="none" stroke="#f4efe4" stroke-width="3.2" stroke-linecap="round" stroke-linejoin="round"/>
+            <circle cx="20" cy="20" r="3.6" fill="#d98a1c"/>
+          </svg>
           <div class="brand-text">
-            <h1 id="brandTitle">EcoScrap AI</h1>
+            <h1 id="brandTitle">EcoScrap <span class="ai-tag">AI</span></h1>
             <p id="brandTagline">Smart E-Waste Collection & Recycling Platform</p>
           </div>
         </div>
 
         <!-- 7 Indian Languages Selector -->
         <div class="lang-selector-wrapper">
-          <div class="lang-selector">
+          <div class="lang-selector" role="group" aria-label="Language">
             <button class="lang-btn active" data-lang="en">EN</button>
             <button class="lang-btn" data-lang="hi">हिन्दी</button>
             <button class="lang-btn" data-lang="mr">मराठी</button>
@@ -48,45 +52,51 @@
           </div>
         </div>
       </div>
+      <!-- Doorstep rate ticker (public customer rates only) — filled by renderRateTicker() -->
+      <div class="rate-ticker" id="rateTicker" hidden></div>
     </header>
 
     <!-- Role Status & Logout Bar (Visible only when logged in) -->
     <div class="user-status-bar" id="userStatusBar" style="display: none;">
-      <div class="role-tag" id="userRoleName">
-        <!-- Injected dynamically -->
-      </div>
+      <div class="role-tag" id="userRoleName"></div>
       <div style="display: flex; align-items: center; gap: 14px;">
-        <span id="userDetails" style="font-size: 13px; font-weight: 600; color: var(--text-muted);"></span>
+        <span id="userDetails" class="user-who"></span>
         <button class="logout-btn" onclick="logoutUser()">
-          🚪 <span id="logoutBtnLabel">Log Out</span>
+          <span id="logoutBtnLabel">Log Out</span>
         </button>
       </div>
     </div>
 
-    <!-- Main Content Area (Expansive Responsive Web Grid) -->
     <main class="app-content" id="appContent">
       <!-- Injected by app.js: Login Portal or Role Dashboard -->
     </main>
 
-    <!-- Website Footer -->
     <footer class="web-footer">
-      <div>
-        <strong>EcoScrap AI</strong> • <span id="footerComplianceText">Central Pollution Control Board (CPCB) & EPR E-Waste Rules 2022 Compliant Architecture.</span>
-      </div>
-      <div style="display:flex; gap:8px; flex-wrap:wrap;">
-        <button class="audio-btn" style="background:#1e293b; color:#a855f7; border:1px solid #334155;" onclick="openVoiceAssistantModal()">
-          🎙️ <span id="footerAskBtnLabel">Ask EcoScrap AI</span>
-        </button>
-        <button class="audio-btn" style="background:#1e293b; color:#22c55e; border:1px solid #334155;" onclick="openHotspotMap()">
-          <span id="footerHotspotBtnLabel">🗺️ Hotspot Map</span>
-        </button>
-        <button class="audio-btn" style="background:#1e293b; color:#38bdf8; border:1px solid #334155;" onclick="openSafetyModal()">
-          🚨 <span id="footerSafetyBtnLabel">Safety & Hazard Guide</span>
-        </button>
+      <div class="footer-inner">
+        <div>
+          <strong>EcoScrap AI</strong><br>
+          <span id="footerComplianceText">Central Pollution Control Board (CPCB) & EPR E-Waste Rules 2022 Compliant Architecture.</span>
+        </div>
+        <div class="footer-tools">
+          <button class="footer-tool" onclick="openHotspotMap()">
+            <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"><path d="M10 18s6-5.2 6-10a6 6 0 1 0-12 0c0 4.8 6 10 6 10z"/><circle cx="10" cy="8" r="2.2"/></svg>
+            <span id="footerHotspotBtnLabel">Hotspot Map</span>
+          </button>
+          <button class="footer-tool" onclick="openSafetyModal()">
+            <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"><path d="M10 2.5 18 17H2z"/><path d="M10 8v4M10 14.4v.1" stroke-linecap="round"/></svg>
+            <span id="footerSafetyBtnLabel">Safety & Hazard Guide</span>
+          </button>
+        </div>
       </div>
     </footer>
 
   </div>
+
+  <!-- AI Voice Assistant — always one tap away -->
+  <button class="fab-ask" onclick="openVoiceAssistantModal()">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><rect x="9" y="3" width="6" height="11" rx="3"/><path d="M5.5 11a6.5 6.5 0 0 0 13 0M12 17.5V21"/></svg>
+    <span id="footerAskBtnLabel">Ask EcoScrap AI</span>
+  </button>
 
   <!-- Core Scripts -->
   <script src="js/api.js"></script>
@@ -94,5 +104,8 @@
   <script src="js/priceUtils.js"></script>
   <script src="js/geoUtils.js"></script>
   <script src="js/app.js"></script>
+  <script src="js/price-history.js"></script>
+  <script src="js/secure-payment.js"></script>
+  <script src="js/scrap-scanner.js"></script>
 </body>
 </html>

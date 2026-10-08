@@ -22,6 +22,11 @@ npm start
 # Then visit http://localhost:3000
 ```
 
+To turn on the AI Scrap Scanner, copy `.env.example` to `.env` and set `GEMINI_API_KEY`
+(free key from https://aistudio.google.com/apikey), then restart the server. The camera opens
+in-page on `localhost` or any `https://` address; on a phone opening the app over plain
+`http://` on your LAN, the button opens the phone's own camera app instead.
+
 Data (materials & rates, registered kabadiwalas/recyclers, lots/transactions, safety guides) lives in `data/esetu.db` and survives server restarts. The database is seeded once from `server/seed-data.js` the first time it's created.
 
 ## 🔑 Demo Access
@@ -39,7 +44,7 @@ through the app, so there is no fixed demo PIN to share.
 
 All 28 features pitched across the 8 innovation categories are real and working — not
 static mocks. Notably:
-- **AI Scrap Scanner & Quality Checker** — deterministic, fully offline photo classification (`js/priceUtils.js`)
+- **AI Scrap Scanner & Quality Checker** — in-page camera capture, then Google Gemini identifies the item, maps it to one of the platform's materials and grades its condition (`js/scrap-scanner.js`, `server/gemini-scan.js`). Needs `GEMINI_API_KEY` in `.env` and internet; without it the customer picks the material by hand
 - **Fair Price Detector / Fraud-Free Payments** — flags offers that drift from the benchmark rate
 - **Smart Weighing** — an honestly-labeled Bluetooth-scale *simulation* (no real hardware exists to integrate)
 - **Digital Scrap Passport & Verified Handover** — real GPS + photo captured at pickup, persisted per booking

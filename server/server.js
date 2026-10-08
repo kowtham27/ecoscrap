@@ -9,7 +9,8 @@ const { startDailyPriceListScheduler } = require('./scheduler');
 const app = express();
 const PORT = process.env.PORT || 3000;
 
-app.use(express.json());
+// Larger limit for /api/scan photo uploads (downscaled client-side to ~1MB or less).
+app.use(express.json({ limit: '8mb' }));
 app.use('/api', apiRouter);
 
 const PROJECT_ROOT = path.join(__dirname, '..');
@@ -26,6 +27,11 @@ initDb()
       console.log(`  [db] ${process.env.TURSO_DATABASE_URL ? 'Turso (remote)' : 'local file (data/esetu.db)'}`);
       if (!process.env.FAST2SMS_API_KEY) {
         console.log('  [sms] FAST2SMS_API_KEY not set in .env — price-list SMS will be skipped (logged, not sent).');
+      }
+      if (!process.env.GEMINI_API_KEY) {
+        console.log('  [scan] GEMINI_API_KEY not set in .env — the AI Scrap Scanner will ask users to pick the material by hand.');
+      } else {
+        console.log(`  [scan] Gemini scanner on (${process.env.GEMINI_MODEL || 'gemini-3.8-flash'})`);
       }
       startDailyPriceListScheduler();
     });

@@ -217,6 +217,20 @@ async function runMigrations() {
   await migrateColumns('materials', [
     { name: 'co2_factor_kg_per_kg', ddl: 'REAL DEFAULT 0' }
   ]);
+  // Secure Payment to Collector: payment is held against a one-time handover code and
+  // only released once the code is confirmed, with the weighed weight + amount actually
+  // paid recorded so a short payment is flagged instead of silently closing the booking.
+  await migrateColumns('customer_bookings', [
+    { name: 'payment_status', ddl: "TEXT DEFAULT 'Held'" },
+    { name: 'handover_otp', ddl: 'TEXT' },
+    { name: 'weighed_kg', ddl: 'REAL' },
+    { name: 'amount_paid', ddl: 'REAL' },
+    { name: 'payment_flag', ddl: 'TEXT' },
+    { name: 'confirmed_by', ddl: 'TEXT' }
+  ]);
+  await migrateColumns('rate_history', [
+    { name: 'source', ddl: "TEXT DEFAULT 'live'" }
+  ]);
   // Safety guide content originally only had English hazard/health-risk/safe-method text
   // (even the title/audio-script fields stopped at Hindi/Marathi) — extending to all 7
   // languages so Tamil/Telugu/Kannada/Malayalam users never silently see Hindi or English
@@ -395,6 +409,30 @@ async function seedSafetyGuideTranslationsIfMissing() {
   }
 }
 
+// Price History needs a starting curve — without it a fresh install shows an empty chart
+// until a recycler happens to publish a rate. The seed sparkline is spread back over the
+// last 27 days and tagged source='seed' so the UI can label it; every real rate change
+// after that is appended as source='live' by PATCH /materials/:id/rate.
+async function seedRateHistoryIfEmpty() {
+  const materials = await db.prepare('SELECT id, recycler_rate, customer_rate, sparkline_json FROM materials').all();
+  const DAY = 24 * 60 * 60 * 1000;
+  for (const m of materials) {
+    const existing = await db.prepare('SELECT COUNT(*) AS c FROM rate_history WHERE material_id = ?').get(m.id);
+    if (Number(existing.c) > 0) continue;
+    const points = JSON.parse(m.sparkline_json || '[]');
+    if (!points.length) continue;
+    const ratio = m.recycler_rate ? m.customer_rate / m.recycler_rate : 1;
+    const step = 3 * DAY;
+    const start = Date.now() - (points.length - 1) * step;
+    for (let i = 0; i < points.length; i++) {
+      await db.prepare(`
+        INSERT INTO rate_history (material_id, recycler_rate, customer_rate, recorded_at, source)
+        VALUES (?, ?, ?, ?, 'seed')
+      `).run(m.id, points[i], Math.round(points[i] * ratio), new Date(start + i * step).toISOString());
+    }
+  }
+}
+
 let initPromise = null;
 function initDb() {
   if (!initPromise) {
@@ -404,6 +442,7 @@ function initDb() {
       await seedIfEmpty();
       await seedCo2FactorsIfMissing();
       await seedSafetyGuideTranslationsIfMissing();
+      await seedRateHistoryIfEmpty();
     })();
   }
   return initPromise;

@@ -25,6 +25,7 @@ function startDeliveryProgressTicker() {
   deliveryProgressInterval = setInterval(() => {
     if (AppState.user && AppState.user.role === 'customer' && AppState.customerTab === 'dealers') {
       renderCustomerPage(document.getElementById('appContent'));
+      SecurePayment.pollActiveBooking();
     } else {
       clearInterval(deliveryProgressInterval);
       deliveryProgressInterval = null;
@@ -77,7 +78,7 @@ const AppState = {
   calculatorWeight: 0.2,
   selectedPaymentMode: 'cash',
   capturedImage: null,
-  aiScanResult: null, // { material, confidencePct, grade, gradeLabel, qualityMultiplier } from PriceUtils.classifyImageDeterministic
+  aiScanResult: null, // { material, confidencePct, grade, gradeLabel, qualityMultiplier, itemDescription, ... } from POST /api/scan (js/scrap-scanner.js)
   activeBookingNotice: null,
   activeBooking: null, // the real customer_bookings row returned by POST /api/bookings, once requested
   customerProfileData: null, // { summary, monthlyComparison, history } fetched from GET /api/customers/:phone/summary
@@ -88,6 +89,65 @@ const AppState = {
   myContract: undefined, // undefined = not yet checked; null = checked, none found
   syncQueue: []
 };
+
+// Small hand-drawn line icons for app chrome (tabs, role picker). Content-level emoji
+// (material icons etc.) stay as they are — they carry meaning for low-literacy users.
+const UI_ICONS = {
+  sell: '<svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M3 4h2l2 9h8l2-6H6.2"/><circle cx="8" cy="16.5" r="1.2"/><circle cx="14" cy="16.5" r="1.2"/></svg>',
+  pin: '<svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"><path d="M10 18s6-5.2 6-10a6 6 0 1 0-12 0c0 4.8 6 10 6 10z"/><circle cx="10" cy="8" r="2.2"/></svg>',
+  user: '<svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"><circle cx="10" cy="7" r="3.3"/><path d="M3.5 17.5c1-3.3 3.6-5 6.5-5s5.5 1.7 6.5 5"/></svg>',
+  chart: '<svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M3 16h14"/><path d="M4 12l4-4 3 2.5L16.5 5"/></svg>',
+  yard: '<svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"><path d="M2.5 17V8l7.5-4.5L17.5 8v9"/><path d="M6 17v-5h8v5M6 14.5h8"/></svg>',
+  home: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"><path d="M3.5 11 12 4l8.5 7"/><path d="M5.5 9.5V20h13V9.5"/><path d="M10 20v-5h4v5"/></svg>',
+  cart: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M2.5 6h3l2 9h9.5"/><path d="M8 6h12l-1.8 6.5H9.5"/><circle cx="9" cy="19" r="1.6"/><circle cx="17" cy="19" r="1.6"/></svg>',
+  factory: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"><path d="M3 20V10l5 3v-3l5 3v-3l5 3V4h3v16z"/><path d="M7 17h2M12 17h2"/></svg>'
+};
+
+// One tab bar for every role. items: [{ key, label, icon }]
+function renderTabbar(items, activeKey, handlerName) {
+  return `
+    <nav class="tabbar" role="tablist">
+      ${items.map((it, i) => `
+        <button role="tab" aria-selected="${it.key === activeKey}" class="tab ${it.key === activeKey ? 'on' : ''}" onclick="${handlerName}('${it.key}')">
+          ${UI_ICONS[it.icon] || ''}<span>${it.label}</span><span class="tab-n">0${i + 1}</span>
+        </button>`).join('')}
+    </nav>`;
+}
+
+// Card entrance animation should only play when the user lands on a new view, not on the
+// in-place re-renders (delivery ticker every 4s, picking a material, typing in a stepper).
+let lastViewKey = null;
+function markView(key) {
+  const el = document.getElementById('appContent');
+  if (!el) return;
+  el.classList.toggle('no-anim', key === lastViewKey);
+  lastViewKey = key;
+}
+
+// The seeded rate6hrAgo field holds the *recycler* rate from 6 hours ago, so comparing it
+// to the customer rate showed every material as crashing (PCB "-₹270"). The customer's
+// previous doorstep rate is the same movement scaled onto the customer rate instead.
+function customerPrevRate(m) {
+  if (!m.recyclerRate || !m.recyclerRate6hrAgo) return m.customerRate;
+  return Math.round(m.customerRate * (m.recyclerRate6hrAgo / m.recyclerRate));
+}
+
+// Doorstep rate ticker under the header — public customer rates only (wholesale rates
+// stay behind the dealer/recycler login). Doubled so the CSS marquee loops seamlessly.
+function renderRateTicker() {
+  const el = document.getElementById('rateTicker');
+  if (!el) return;
+  const mats = ESETU_DATA.materials || [];
+  if (!mats.length) { el.hidden = true; return; }
+  const items = mats.map(m => {
+    const diff = m.customerRate - customerPrevRate(m);
+    const cls = diff > 0 ? 'up' : (diff < 0 ? 'down' : '');
+    const arrow = diff > 0 ? '▲' : (diff < 0 ? '▼' : '•');
+    return `<span class="rate-ticker-item" onclick="openPriceHistory('${m.id}')"><span class="sym">${m.symbol}</span><b>₹${m.customerRate}/kg</b><span class="${cls}">${arrow} ${Math.abs(diff)}</span></span>`;
+  }).join('');
+  el.innerHTML = `<div class="rate-ticker-label"><span class="live-dot-pulse" style="background:var(--ink)"></span>${I18N.t('tickerLabel')}</div><div class="rate-ticker-track" style="padding-left:170px">${items}${items}</div>`;
+  el.hidden = false;
+}
 
 const OFFLINE_SNAPSHOT_KEY = 'esetu_offline_snapshot';
 const SYNC_QUEUE_KEY = 'esetu_sync_queue';
@@ -183,7 +243,9 @@ function renderApp() {
   const footerAskBtn = document.getElementById('footerAskBtnLabel');
   if (footerAskBtn) footerAskBtn.textContent = I18N.t('assistantTitle');
   const footerHotspotBtn = document.getElementById('footerHotspotBtnLabel');
-  if (footerHotspotBtn) footerHotspotBtn.textContent = I18N.t('hotspotMapBtn');
+  if (footerHotspotBtn) footerHotspotBtn.textContent = I18N.t('hotspotMapBtn').replace(/^\p{Extended_Pictographic}\uFE0F?\s*/u, '');
+  renderRateTicker();
+  document.documentElement.lang = I18N.currentLang || 'en';
   const footerSafetyBtn = document.getElementById('footerSafetyBtnLabel');
   if (footerSafetyBtn) footerSafetyBtn.textContent = I18N.t('footerSafetyBtnLabel');
 
@@ -239,7 +301,7 @@ function renderOfflineBanner() {
   if (!el) {
     el = document.createElement('div');
     el.id = 'offlineBanner';
-    el.style.cssText = 'position:sticky; top:0; z-index:500; background:#78350f; color:#fef3c7; text-align:center; padding:6px 12px; font-size:12.5px; font-weight:700;';
+    el.style.cssText = 'position:sticky; top:0; z-index:500; background:var(--accent-ink); color:var(--accent-light); text-align:center; padding:6px 12px; font-size:12.5px; font-weight:700;';
     document.body.insertBefore(el, document.body.firstChild);
   }
 
@@ -261,13 +323,7 @@ function updateStatusBar() {
     recycler: I18N.t('roleRecycler')
   };
 
-  const icons = {
-    customer: '👤',
-    kabadiwala: '🚲',
-    recycler: '🏭'
-  };
-
-  roleNameEl.innerHTML = `${icons[AppState.user.role]} ${roleTitles[AppState.user.role]}`;
+  roleNameEl.textContent = roleTitles[AppState.user.role];
   userDetailsEl.textContent = `${AppState.user.name || 'User'} (${AppState.user.phone || ''})`;
   if (logoutBtnLabel) logoutBtnLabel.textContent = I18N.t('logoutBtn');
 }
@@ -279,12 +335,57 @@ function renderLoginPage(container) {
   let selectedRole = 'customer';
   let kabadiMode = 'login'; // 'login' | 'register'
 
+  markView('login');
+
+  // Left-hand pitch: today's public doorstep rates on a "rate slip", how a pickup works,
+  // and live counts straight from the bootstrap data (nothing hard-coded).
+  function pitchHtml() {
+    const slipRows = (ESETU_DATA.materials || []).slice(0, 5).map(m => {
+      const diff = m.customerRate - customerPrevRate(m);
+      return `
+        <div class="rate-slip-row">
+          <span>${m.icon}</span>
+          <span class="nm">${getLocalizedMatName(m).split('(')[0]}</span>
+          <span class="rt">₹${m.customerRate}</span>
+          <span class="ch ${diff >= 0 ? 'txt-up' : 'txt-down'}">${diff >= 0 ? '+' : '−'}${Math.abs(diff)}</span>
+        </div>`;
+    }).join('');
+    const dealers = (ESETU_DATA.kabadiwalas || []).length;
+    const recyclers = (ESETU_DATA.recyclers || []).length;
+    return `
+      <section class="pitch">
+        <p class="eyebrow">${I18N.t('heroEyebrow')}</p>
+        <h2>${I18N.t('heroHeadline')}</h2>
+        <p>${I18N.t('heroSub')}</p>
+
+        <div class="rate-slip" aria-label="${I18N.t('rateSlipTitle')}">
+          <div class="rate-slip-head"><span>${I18N.t('rateSlipTitle')}</span><span>₹ / kg</span></div>
+          ${slipRows}
+        </div>
+
+        <ol class="steps">
+          <li><span class="n">1</span><div><strong>${I18N.t('heroStep1Title')}</strong><span>${I18N.t('heroStep1Body')}</span></div></li>
+          <li><span class="n">2</span><div><strong>${I18N.t('heroStep2Title')}</strong><span>${I18N.t('heroStep2Body')}</span></div></li>
+          <li><span class="n">3</span><div><strong>${I18N.t('heroStep3Title')}</strong><span>${I18N.t('heroStep3Body')}</span></div></li>
+        </ol>
+
+        <div class="pitch-stats">
+          <div><b>${dealers}</b><span>${I18N.t('statDealers')}</span></div>
+          <div><b>${recyclers}</b><span>${I18N.t('statRecyclers')}</span></div>
+          <div><b>${(ESETU_DATA.materials || []).length}</b><span>${I18N.t('statMaterials')}</span></div>
+          <div><b>7</b><span>${I18N.t('statLanguages')}</span></div>
+        </div>
+      </section>`;
+  }
+
   function updateFormHtml() {
     return `
-      <div class="card" style="max-width: 860px; margin: 20px auto; border-top: 5px solid var(--primary);">
+      <div class="login-split">
+      ${pitchHtml()}
+      <div class="card login-card">
         <div class="card-header">
           <div>
-            <h2 class="card-title" style="font-size: 22px;">${I18N.t('loginTitle')}</h2>
+            <h2 class="card-title">${I18N.t('loginTitle')}</h2>
             <p class="card-subtitle">${I18N.t('loginSubtitle')}</p>
           </div>
           <button class="audio-btn" onclick="I18N.speak('${I18N.t('loginTitle')}. ${I18N.t('loginSubtitle')}')">
@@ -296,7 +397,7 @@ function renderLoginPage(container) {
         <div class="role-cards-grid">
           <!-- Customer Role -->
           <div class="role-card ${selectedRole === 'customer' ? 'selected' : ''}" id="roleCard-customer" onclick="selectRole('customer')">
-            <div class="role-card-icon">👤</div>
+            <div class="role-card-icon">${UI_ICONS.home}</div>
             <div class="role-card-content">
               <h3>${I18N.t('roleCustomer')}</h3>
               <p>${I18N.t('roleCustomerDesc')}</p>
@@ -305,7 +406,7 @@ function renderLoginPage(container) {
 
           <!-- Kabadiwala Role (Restricted Access) -->
           <div class="role-card ${selectedRole === 'kabadiwala' ? 'selected' : ''}" id="roleCard-kabadiwala" onclick="selectRole('kabadiwala')">
-            <div class="role-card-icon">🚲</div>
+            <div class="role-card-icon">${UI_ICONS.cart}</div>
             <div class="role-card-content">
               <h3>${I18N.t('roleKabadiwala')}</h3>
               <p>${I18N.t('roleKabadiwalaDesc')}</p>
@@ -314,7 +415,7 @@ function renderLoginPage(container) {
 
           <!-- Recycler Role (Strict Govt Reg Guard) -->
           <div class="role-card ${selectedRole === 'recycler' ? 'selected' : ''}" id="roleCard-recycler" onclick="selectRole('recycler')">
-            <div class="role-card-icon">🏭</div>
+            <div class="role-card-icon">${UI_ICONS.factory}</div>
             <div class="role-card-content">
               <h3>${I18N.t('roleRecycler')}</h3>
               <p>${I18N.t('roleRecyclerDesc')}</p>
@@ -324,13 +425,9 @@ function renderLoginPage(container) {
 
         <!-- Kabadiwala Mode Toggle (Login vs Register) -->
         ${selectedRole === 'kabadiwala' ? `
-          <div style="display: flex; background: #e2e8f0; border-radius: var(--radius-sm); padding: 4px; margin-bottom: 18px; gap: 6px;">
-            <button class="btn-secondary ${kabadiMode === 'login' ? 'btn-primary' : ''}" style="flex:1; padding: 8px; font-size: 13px;" onclick="setKabadiMode('login')">
-              🔑 ${I18N.t('kabadiSignInModeLabel')}
-            </button>
-            <button class="btn-secondary ${kabadiMode === 'register' ? 'btn-primary' : ''}" style="flex:1; padding: 8px; font-size: 13px;" onclick="setKabadiMode('register')">
-              📝 ${I18N.t('kabadiRegisterModeLabel')}
-            </button>
+          <div class="mode-toggle">
+            <button class="${kabadiMode === 'login' ? 'on' : ''}" onclick="setKabadiMode('login')">${I18N.t('kabadiSignInModeLabel')}</button>
+            <button class="${kabadiMode === 'register' ? 'on' : ''}" onclick="setKabadiMode('register')">${I18N.t('kabadiRegisterModeLabel')}</button>
           </div>
         ` : ''}
 
@@ -356,13 +453,9 @@ function renderLoginPage(container) {
 
           <!-- Role 2: Kabadiwala Predefined Authorized Access -->
           ${selectedRole === 'kabadiwala' ? (kabadiMode === 'login' ? `
-            <div style="background: #f0fdf4; border: 1.5px solid #86efac; border-radius: var(--radius-sm); padding: 14px; margin-bottom: 16px;">
-              <div style="margin-bottom:8px;">
-                <strong style="color: #166534; font-size: 13px;">🔒 ${I18N.t('kabadiAuthCardTitle')}</strong>
-              </div>
-              <p style="font-size: 12px; color: #166534; margin-bottom: 12px;">
-                ${I18N.t('kabadiAuthCardBody')}
-              </p>
+            <div class="panel-soft">
+              <div class="panel-soft-title">${I18N.t('kabadiAuthCardTitle')}</div>
+              <p>${I18N.t('kabadiAuthCardBody')}</p>
               <div class="desktop-grid-2">
                 <div class="form-group" style="margin-bottom:0;">
                   <label class="form-label">${I18N.t('phoneLabel')}</label>
@@ -405,7 +498,7 @@ function renderLoginPage(container) {
               <label class="form-label">${I18N.t('pincodeLabel')}</label>
               <input type="text" id="loginLocation" class="form-input" placeholder="${I18N.t('pincodePlaceholder')}" autocomplete="off">
             </div>
-            <div style="background: #f0fdf4; border: 1.5px solid #86efac; padding: 12px; border-radius: var(--radius-sm); margin-bottom: 14px; font-size: 13px; color: #166534;">
+            <div style="background: var(--primary-light); border: 1.5px solid var(--primary-line); padding: 12px; border-radius: var(--radius-sm); margin-bottom: 14px; font-size: 13px; color: var(--primary-dark);">
               <label style="display: flex; align-items: center; gap: 8px; cursor: pointer;">
                 <input type="checkbox" id="regDigitalScale" checked style="width: 18px; height: 18px;">
                 <strong>${I18N.t('digitalScaleLabel')}</strong>
@@ -415,21 +508,21 @@ function renderLoginPage(container) {
 
           <!-- Role 3: Recycler CPCB Registration (self-service: first login = real registration) -->
           ${selectedRole === 'recycler' ? `
-            <div style="background: #eff6ff; padding: 18px; border-radius: var(--radius-sm); border: 2px solid #3b82f6; margin-bottom: 16px;">
-              <label class="form-label" style="color: #1e40af; margin-bottom: 10px; font-size: 14px; display: block;">
+            <div style="background: var(--info-light); padding: 18px; border-radius: var(--radius-sm); border: 2px solid var(--info); margin-bottom: 16px;">
+              <label class="form-label" style="color: var(--info); margin-bottom: 10px; font-size: 14px; display: block;">
                 🛡️ ${I18N.t('govRegLabel')}
               </label>
-              <input type="text" id="loginGovReg" class="form-input" style="font-weight: 800; color: #1e3a8a; text-transform: uppercase;" placeholder="${I18N.t('govRegPlaceholder')}" autocomplete="off">
-              <p class="form-help" style="color: #1d4ed8; margin-top: 6px;">
+              <input type="text" id="loginGovReg" class="form-input" style="font-weight: 800; color: var(--info); text-transform: uppercase;" placeholder="${I18N.t('govRegPlaceholder')}" autocomplete="off">
+              <p class="form-help" style="color: var(--info); margin-top: 6px;">
                 ${I18N.t('govRegFirstTimeHelp')}
               </p>
               <div class="desktop-grid-2" style="margin-top: 12px;">
                 <div>
-                  <label class="form-label" style="color:#1e40af; font-size:12.5px;">${I18N.t('recyclerFacilityNameLabel')}</label>
+                  <label class="form-label" style="color:var(--info); font-size:12.5px;">${I18N.t('recyclerFacilityNameLabel')}</label>
                   <input type="text" id="loginName" class="form-input" placeholder="${I18N.t('recyclerFacilityNamePlaceholder')}" autocomplete="off">
                 </div>
                 <div>
-                  <label class="form-label" style="color:#1e40af; font-size:12.5px;">${I18N.t('plantPhoneLabel')}</label>
+                  <label class="form-label" style="color:var(--info); font-size:12.5px;">${I18N.t('plantPhoneLabel')}</label>
                   <input type="tel" id="loginPhone" class="form-input" placeholder="${I18N.t('phonePlaceholder')}">
                 </div>
               </div>
@@ -437,13 +530,10 @@ function renderLoginPage(container) {
           ` : ''}
         </div>
 
-        <div style="background: var(--success-light); color: var(--success); padding: 10px 14px; border-radius: var(--radius-sm); font-size: 12.5px; font-weight: 600; margin-bottom: 16px; display: flex; align-items: center; gap: 8px;">
-          ${I18N.t('otpMockNotice')}
-        </div>
-
         <button class="btn-primary" onclick="handleLoginSubmit()">
           ${selectedRole === 'kabadiwala' && kabadiMode === 'register' ? I18N.t('registerBtn') : I18N.t('loginBtn')}
         </button>
+      </div>
       </div>
 
       <!-- Security Rejection Modal Container -->
@@ -456,12 +546,14 @@ function renderLoginPage(container) {
   // Role selection helper
   window.selectRole = (role) => {
     selectedRole = role;
+    markView('login');
     container.innerHTML = updateFormHtml();
   };
 
   // Kabadiwala mode toggle
   window.setKabadiMode = (mode) => {
     kabadiMode = mode;
+    markView('login');
     container.innerHTML = updateFormHtml();
   };
 
@@ -568,12 +660,12 @@ function renderLoginPage(container) {
 
     modalContainer.innerHTML = `
       <div class="modal-overlay">
-        <div class="modal-content" style="border-top: 6px solid #ea580c; max-width: 440px; text-align: center;">
+        <div class="modal-content" style="border-top: 6px solid var(--accent); max-width: 440px; text-align: center;">
           <div style="font-size: 44px; margin-bottom: 8px;">🔒</div>
-          <h3 style="font-size: 18px; font-weight: 900; color: #9a3412; margin-bottom: 8px;">
+          <h3 style="font-size: 18px; font-weight: 900; color: var(--accent-ink); margin-bottom: 8px;">
             ${I18N.t('dealerAuthFailedTitle')}
           </h3>
-          <div style="background: #fff7ed; border: 1.5px solid #fed7aa; padding: 14px; border-radius: var(--radius-sm); font-size: 13px; color: #9a3412; text-align: left; margin: 14px 0;">
+          <div style="background: var(--accent-light); border: 1.5px solid #ecc98a; padding: 14px; border-radius: var(--radius-sm); font-size: 13px; color: var(--accent-ink); text-align: left; margin: 14px 0;">
             <p><strong>${I18N.t('phoneLabel')}</strong> <code>${phone}</code></p>
             <p style="margin-top: 6px;">
               ${I18N.t('kabadiAuthError')}
@@ -600,26 +692,12 @@ function renderCustomerPage(container) {
   if (!AppState.customerTab) AppState.customerTab = 'sell';
   if (!AppState.trackedKabadiwala) AppState.trackedKabadiwala = ESETU_DATA.kabadiwalas[0] || null;
 
-  // Top Tab Navigation for Customer (3 Compact Sub-Pages)
-  const tabNavHtml = `
-    <div style="display: flex; gap: 8px; background: #e2e8f0; border-radius: var(--radius-sm); padding: 5px; margin-bottom: 16px;">
-      <button class="btn-secondary ${AppState.customerTab === 'sell' ? 'btn-primary' : ''}" 
-              style="flex: 1; padding: 9px 12px; font-size: 13.5px; font-weight: 700;" 
-              onclick="setCustomerTab('sell')">
-        🛒 ${I18N.t('sellTabLabel')}
-      </button>
-      <button class="btn-secondary ${AppState.customerTab === 'dealers' ? 'btn-primary' : ''}"
-              style="flex: 1; padding: 9px 12px; font-size: 13.5px; font-weight: 700;"
-              onclick="setCustomerTab('dealers')">
-        📍 ${I18N.t('dealersTabLabel')}
-      </button>
-      <button class="btn-secondary ${AppState.customerTab === 'profile' ? 'btn-primary' : ''}"
-              style="flex: 1; padding: 9px 12px; font-size: 13.5px; font-weight: 700;"
-              onclick="setCustomerTab('profile')">
-        👤 ${I18N.t('custProfileTabLabel')}
-      </button>
-    </div>
-  `;
+  markView(`customer:${AppState.customerTab}`);
+  const tabNavHtml = renderTabbar([
+    { key: 'sell', label: I18N.t('sellTabLabel'), icon: 'sell' },
+    { key: 'dealers', label: I18N.t('dealersTabLabel'), icon: 'pin' },
+    { key: 'profile', label: I18N.t('custProfileTabLabel'), icon: 'user' }
+  ], AppState.customerTab, 'setCustomerTab');
 
   if (AppState.customerTab === 'sell') {
     renderCustomerSellTab(container, tabNavHtml);
@@ -686,20 +764,23 @@ function renderCustomerSellTab(container, tabNavHtml) {
 
   // Compact 6-hr comparisons
   const compRowsHtml = ESETU_DATA.materials.map(m => {
-    const diff = m.customerRate - m.rate6hrAgo;
+    const diff = m.customerRate - customerPrevRate(m);
     const diffText = diff >= 0 ? `+₹${diff} ▲` : `-₹${Math.abs(diff)} ▼`;
     const cls = diff >= 0 ? 'up' : 'down';
     const isSelected = m.id === currentMat.id;
     return `
-      <div class="comparison-row" style="padding: 7px 10px; cursor: pointer; ${isSelected ? 'background: #f0fdf4; border-left: 3px solid var(--primary);' : ''}" onclick="selectCustomerMaterial('${m.id}')">
+      <div class="comparison-row" style="padding: 7px 10px; cursor: pointer; ${isSelected ? 'background: var(--primary-light); border-left: 3px solid var(--primary);' : ''}" onclick="selectCustomerMaterial('${m.id}')">
         <div class="comp-mat" style="font-size: 13px;">
           <span>${m.icon}</span>
           <span style="font-weight: 700;">${getLocalizedMatName(m).split('(')[0]}</span>
         </div>
         <div class="comp-prices" style="font-size: 12.5px;">
-          <span class="old-rate" style="font-size: 11px;">₹${m.rate6hrAgo}</span>
+          <span class="old-rate" style="font-size: 11px;">₹${customerPrevRate(m)}</span>
           <strong class="new-rate">₹${m.customerRate}/kg</strong>
           <span class="trend-badge ${cls}" style="font-size: 10.5px; padding: 2px 6px;">${diffText}</span>
+          <button class="hist-btn" onclick="event.stopPropagation(); openPriceHistory('${m.id}')" title="${I18N.t('priceHistoryTitle')}" aria-label="${I18N.t('priceHistoryTitle')}">
+            <svg viewBox="0 0 16 16" width="14" height="14"><path d="M1 13 L5 8 L8 10 L15 3" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>
+          </button>
         </div>
       </div>
     `;
@@ -717,20 +798,20 @@ function renderCustomerSellTab(container, tabNavHtml) {
   container.innerHTML = `
     ${tabNavHtml}
 
-    <!-- Compact Price Guarantee Banner -->
-    <div style="background: linear-gradient(135deg, #065f46, #047857); color: #fff; padding: 12px 18px; border-radius: var(--radius-sm); margin-bottom: 14px; display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 10px;">
+    <div class="page-band">
       <div>
-        <h3 style="font-size: 16px; font-weight: 800; margin: 0;">${I18N.t('custTitle')}</h3>
-        <p style="font-size: 12px; opacity: 0.95; margin-top: 2px;">${I18N.t('custSubtitle')}</p>
+        <p class="eyebrow">${I18N.tf('helloName', { name: AppState.user.name || '' })}</p>
+        <h2>${I18N.t('custTitle')}</h2>
+        <p>${I18N.t('custSubtitle')}</p>
       </div>
-      <button class="audio-btn" style="background:#fff; color:var(--primary-dark); font-size:11.5px; padding:4px 10px;" onclick="I18N.speak('${I18N.t('custTitle')}. ${I18N.t('custSubtitle')}')">
+      <button class="audio-btn" onclick="I18N.speak('${I18N.t('custTitle')}. ${I18N.t('custSubtitle')}')">
         ${I18N.t('speakBtn')}
       </button>
     </div>
 
     <!-- Active Booking Alert (with 1-tap live ETA map link) -->
     ${AppState.activeBookingNotice ? `
-      <div style="background: #ecfdf5; border: 1.5px solid #10b981; padding: 10px 14px; border-radius: var(--radius-sm); margin-bottom: 14px; font-size: 13px; color: #065f46; display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 8px;">
+      <div style="background: var(--primary-light); border: 1.5px solid var(--success); padding: 10px 14px; border-radius: var(--radius-sm); margin-bottom: 14px; font-size: 13px; color: var(--primary-dark); display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 8px;">
         <div>${AppState.activeBookingNotice}</div>
         <button class="btn-primary" style="padding: 6px 12px; font-size: 12px; width: auto;" onclick="setCustomerTab('dealers')">
           🛵 ${I18N.t('viewLiveEtaBtn')}
@@ -748,7 +829,7 @@ function renderCustomerSellTab(container, tabNavHtml) {
             <div class="card-title" style="font-size: 14px;">
               ${I18N.t('compareBoxTitle')}
             </div>
-            <span style="font-size: 11px; background: #ecfdf5; color: #047857; padding: 2px 7px; border-radius: 4px; font-weight: 800;">
+            <span style="font-size: 11px; background: var(--primary-light); color: var(--primary); padding: 2px 7px; border-radius: 4px; font-weight: 800;">
               ● ${I18N.t('liveDoorstepRatesBadge')}
             </span>
           </div>
@@ -772,7 +853,7 @@ function renderCustomerSellTab(container, tabNavHtml) {
             </button>
           </div>
 
-          <div class="capture-box" style="padding: 18px 12px;" onclick="triggerCameraMock()">
+          <div class="capture-box" style="padding: 18px 12px;" onclick="ScrapScanner.open()">
             <div style="font-size: 32px;">📸</div>
             <div style="font-weight: 800; font-size: 14px; margin-top: 4px;">
               ${I18N.t('takePhotoBtn')}
@@ -780,10 +861,12 @@ function renderCustomerSellTab(container, tabNavHtml) {
             <p style="font-size: 11.5px; color: var(--text-muted); margin-top: 2px;">
               ${I18N.t('captureHint')}
             </p>
-            <input type="file" id="cameraInput" accept="image/*" style="display:none;" onchange="handleImageSelected(event)">
           </div>
+          <!-- Fallbacks when in-page camera isn't available: capture= opens the phone's camera app -->
+          <input type="file" id="cameraInput" accept="image/*" capture="environment" hidden onchange="ScrapScanner.onFileChosen(event)">
+          <input type="file" id="galleryInput" accept="image/*" hidden onchange="ScrapScanner.onFileChosen(event)">
 
-          ${AppState.aiScanResult ? renderAiDetectionCard(AppState.aiScanResult) : ''}
+          ${ScrapScanner.cardHtml()}
         </div>
       </div>
 
@@ -806,7 +889,7 @@ function renderCustomerSellTab(container, tabNavHtml) {
           </div>
 
           <!-- Voice Selling: speak the material and weight instead of tapping -->
-          <button id="voiceSellBtn" class="btn-secondary" style="width: 100%; padding: 7px; font-size: 12px; font-weight: 700; border-color: #a855f7; color: #7e22ce; margin-bottom: 6px;" onclick="startVoiceSelling()">
+          <button id="voiceSellBtn" class="btn-secondary" style="width: 100%; padding: 7px; font-size: 12px; font-weight: 700; border-color: var(--plum); color: var(--plum); margin-bottom: 6px;" onclick="startVoiceSelling()">
             🎙️ ${I18N.t('voiceSellBtn')}
           </button>
           <div id="voiceSellStatus" style="font-size: 11px; color: var(--text-muted); text-align: center; margin-bottom: 6px; min-height: 14px;"></div>
@@ -815,18 +898,18 @@ function renderCustomerSellTab(container, tabNavHtml) {
           <div style="text-align: center; margin-top: 6px;">
             <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 5px; flex-wrap: wrap; gap: 6px;">
               <span style="font-size: 12.5px; font-weight: 700; color: var(--primary-dark);">${I18N.t('weightLabel')}</span>
-              <span style="font-size: 11px; background: #ecfdf5; color: #065f46; font-weight: 800; padding: 2px 8px; border-radius: 4px;">
+              <span style="font-size: 11px; background: var(--primary-light); color: var(--primary-dark); font-weight: 800; padding: 2px 8px; border-radius: 4px;">
                 ⚡ ${I18N.t('microWeightsAcceptedBadge')}
               </span>
             </div>
 
             <div id="smartScaleWidget" style="margin-bottom: 8px;">
               ${AppState.scaleReading ? `
-                <div style="text-align:center; font-size:12px; font-weight:700; color:#166534; padding:7px; background:#f0fdf4; border:1px solid #86efac; border-radius:6px;">
+                <div style="text-align:center; font-size:12px; font-weight:700; color:var(--primary-dark); padding:7px; background:var(--primary-light); border:1px solid var(--primary-line); border-radius:6px;">
                   ⚖️ ${I18N.t('scaleSyncedLabel')} ${Math.round(AppState.scaleReading.weightKg * 1000)}g
                 </div>
               ` : `
-                <button class="btn-secondary" style="width: 100%; padding: 7px; font-size: 12px; font-weight: 700; border-color: #3b82f6; color: #1d4ed8;" onclick="connectSmartScale()">
+                <button class="btn-secondary" style="width: 100%; padding: 7px; font-size: 12px; font-weight: 700; border-color: var(--info); color: var(--info);" onclick="connectSmartScale()">
                   ⚖️ ${I18N.t('connectScaleBtn')}
                 </button>
               `}
@@ -907,7 +990,9 @@ function renderCustomerDealersTab(container, tabNavHtml) {
   }
 
   const tracked = AppState.trackedKabadiwala || ESETU_DATA.kabadiwalas[0];
-  const payout = (AppState.calculatorWeight * AppState.selectedMaterial.customerRate).toFixed(0);
+  const payout = AppState.activeBooking
+    ? Number(AppState.activeBooking.totalAmount).toFixed(0)
+    : (AppState.calculatorWeight * AppState.selectedMaterial.customerRate).toFixed(0);
 
   // Delivery Partner live progress — a real elapsed-time calculation against the tracked
   // ETA (ticking every few seconds via the interval started below), replacing what used to
@@ -926,7 +1011,7 @@ function renderCustomerDealersTab(container, tabNavHtml) {
       <div class="review-item" style="padding: 8px; font-size: 12px;">
         <div class="review-author">
           <span>👤 ${r.customer}</span>
-          <span style="color: #b45309;">★ ${r.rating}</span>
+          <span style="color: var(--accent-ink);">★ ${r.rating}</span>
         </div>
         <div class="review-text" style="font-size: 11.5px;">"${r.text}"</div>
       </div>
@@ -936,13 +1021,13 @@ function renderCustomerDealersTab(container, tabNavHtml) {
       <div class="card" style="padding: 16px; margin-bottom: 14px; border-left: 5px solid ${isCurrentlyTracked ? 'var(--primary)' : 'var(--border)'};">
         <div style="display: flex; justify-content: space-between; align-items: flex-start; gap: 12px; flex-wrap: wrap;">
           <div style="display: flex; gap: 12px; align-items: center;">
-            <div style="font-size: 38px; background: #f1f5f9; width: 62px; height: 62px; border-radius: var(--radius-sm); display: flex; align-items: center; justify-content: center;">
+            <div style="font-size: 38px; background: var(--surface-2); width: 62px; height: 62px; border-radius: var(--radius-sm); display: flex; align-items: center; justify-content: center;">
               ${k.photo}
             </div>
             <div>
               <div style="display: flex; align-items: center; gap: 8px;">
                 <h4 style="font-size: 16px; font-weight: 800; color: var(--text-main); margin: 0;">${k.name}</h4>
-                <span style="background: #dcfce7; color: #166534; font-size: 10.5px; font-weight: 800; padding: 2px 7px; border-radius: var(--radius-full);">
+                <span style="background: var(--success-light); color: var(--primary-dark); font-size: 10.5px; font-weight: 800; padding: 2px 7px; border-radius: var(--radius-full);">
                   ${k.badge}
                 </span>
               </div>
@@ -956,9 +1041,9 @@ function renderCustomerDealersTab(container, tabNavHtml) {
           </div>
 
           <div style="text-align: right;">
-            <div style="font-size: 13px; font-weight: 800; color: #b45309;">★ ${k.rating} <span style="font-size:11px; color:var(--text-muted);">(${k.totalReviews} reviews)</span></div>
+            <div style="font-size: 13px; font-weight: 800; color: var(--accent-ink);">★ ${k.rating} <span style="font-size:11px; color:var(--text-muted);">(${k.totalReviews} reviews)</span></div>
             <div style="margin-top: 4px;">
-              <span style="background: #ecfdf5; color: #065f46; font-size: 11.5px; font-weight: 800; padding: 3px 8px; border-radius: 4px;">
+              <span style="background: var(--primary-light); color: var(--primary-dark); font-size: 11.5px; font-weight: 800; padding: 3px 8px; border-radius: 4px;">
                 🛵 ETA ~${k.etaMinutes} mins (${k.etaDistanceKm} km)
               </span>
             </div>
@@ -966,7 +1051,7 @@ function renderCustomerDealersTab(container, tabNavHtml) {
         </div>
 
         <!-- Deep Scrap Dealer Info & Certified Scales -->
-        <div style="background: #f8fafc; border: 1px solid var(--border); border-radius: var(--radius-sm); padding: 10px 12px; margin: 10px 0; font-size: 12px; line-height: 1.5;">
+        <div style="background: var(--surface-2); border: 1px solid var(--border); border-radius: var(--radius-sm); padding: 10px 12px; margin: 10px 0; font-size: 12px; line-height: 1.5;">
           <div>📍 <strong>${I18N.t('addressLabel')}</strong> ${k.fullAddress}</div>
           <div style="margin-top: 3px;">⚖️ <strong>${I18N.t('weighingEquipmentLabel')}</strong> ${k.weighingEquipment}</div>
           <div style="margin-top: 3px;">⏰ <strong>${I18N.t('hoursLabel')}</strong> ${k.operatingHours} • 📜 <strong>${I18N.t('licenseLabel')}</strong> <code>${k.licenseNo}</code></div>
@@ -976,7 +1061,7 @@ function renderCustomerDealersTab(container, tabNavHtml) {
         <!-- Action Links: Google Maps & Booking -->
         <div style="display: flex; gap: 8px; flex-wrap: wrap;">
           <!-- Location Link Opening Google Maps in New Tab -->
-          <a href="${k.googleMapsUrl}" target="_blank" class="btn-secondary" style="flex: 1; min-width: 170px; display: inline-flex; align-items: center; justify-content: center; gap: 6px; font-size: 12px; padding: 8px; text-decoration: none; border-color: #3b82f6; color: #1d4ed8; font-weight: 700;">
+          <a href="${k.googleMapsUrl}" target="_blank" class="btn-secondary" style="flex: 1; min-width: 170px; display: inline-flex; align-items: center; justify-content: center; gap: 6px; font-size: 12px; padding: 8px; text-decoration: none; border-color: var(--info); color: var(--info); font-weight: 700;">
             🗺️ ${I18N.t('openMapsLocationBtn')}
           </a>
           <a href="tel:${k.phone}" class="btn-secondary" style="padding: 8px 14px; font-size: 12px; text-decoration: none; display: inline-flex; align-items: center; gap: 4px;">
@@ -1003,7 +1088,7 @@ function renderCustomerDealersTab(container, tabNavHtml) {
 
   const dayNames = getDayNames();
   const collectionDayBanner = AppState.nextCollectionDay ? `
-    <div style="background: #eff6ff; border: 1.5px solid #93c5fd; padding: 10px 14px; border-radius: var(--radius-sm); margin-bottom: 14px; font-size: 12.5px; color: #1e40af; font-weight: 700;">
+    <div style="background: var(--info-light); border: 1.5px solid var(--info-line); padding: 10px 14px; border-radius: var(--radius-sm); margin-bottom: 14px; font-size: 12.5px; color: var(--info); font-weight: 700;">
       📅 ${I18N.t('nextCollectionDayLabel')} ${I18N.t('everyWeekdayPrefix')} ${dayNames[AppState.nextCollectionDay.dayOfWeek]} (${AppState.nextCollectionDay.kabadiwalaName})
     </div>
   ` : '';
@@ -1013,7 +1098,7 @@ function renderCustomerDealersTab(container, tabNavHtml) {
     ${collectionDayBanner}
 
     <!-- 1. Active Order Live Tracking & Estimated Time of Arrival (ETA) -->
-    <div class="card" style="border-top: 4px solid var(--primary); background: #ffffff; padding: 18px; margin-bottom: 16px; box-shadow: var(--shadow-md);">
+    <div class="card" style="border-top: 4px solid var(--primary); background: var(--card); padding: 18px; margin-bottom: 16px; box-shadow: var(--shadow-md);">
       <div style="display: flex; justify-content: space-between; align-items: flex-start; flex-wrap: wrap; gap: 12px;">
         <div>
           <div style="display: flex; align-items: center; gap: 8px;">
@@ -1032,12 +1117,12 @@ function renderCustomerDealersTab(container, tabNavHtml) {
 
         <!-- Dynamic Live ETA Badge -->
         <div style="text-align: right;">
-          <div style="background: #ecfdf5; border: 1.5px solid #86efac; padding: 8px 14px; border-radius: var(--radius-sm); text-align: center;">
-            <div style="font-size: 11px; font-weight: 800; color: #166534; text-transform: uppercase;">${I18N.t('etaLabelLong')}</div>
-            <div style="font-size: 24px; font-weight: 900; color: #166534; margin-top: 2px;">
+          <div style="background: var(--primary-light); border: 1.5px solid var(--primary-line); padding: 8px 14px; border-radius: var(--radius-sm); text-align: center;">
+            <div style="font-size: 11px; font-weight: 800; color: var(--primary-dark); text-transform: uppercase;">${I18N.t('etaLabelLong')}</div>
+            <div style="font-size: 24px; font-weight: 900; color: var(--primary-dark); margin-top: 2px;">
               ~${tracked.etaMinutes} ${I18N.t('minsUnit')}
             </div>
-            <div style="font-size: 11px; color: #15803d; font-weight: 600;">${I18N.t('distanceAwayLabel')} ${tracked.etaDistanceKm} km</div>
+            <div style="font-size: 11px; color: var(--primary); font-weight: 600;">${I18N.t('distanceAwayLabel')} ${tracked.etaDistanceKm} km</div>
           </div>
         </div>
       </div>
@@ -1045,12 +1130,12 @@ function renderCustomerDealersTab(container, tabNavHtml) {
       <!-- Live 3-Stage Progress Timeline -->
       <div style="margin: 16px 0 12px 0;">
         <div style="display: flex; justify-content: space-between; font-size: 12px; font-weight: 700; margin-bottom: 6px;">
-          <span style="color: #166534;">1. ${I18N.t('stageConfirmed')} ✓</span>
+          <span style="color: var(--primary-dark);">1. ${I18N.t('stageConfirmed')} ✓</span>
           <span style="color: var(--primary);">2. ${I18N.t('stageEnRouteWithScale')} 🛵</span>
           <span style="color: var(--text-muted);">3. ${I18N.t('stageHandoverCash')} 💵</span>
         </div>
-        <div style="background: #e2e8f0; height: 8px; border-radius: 4px; position: relative; overflow: hidden;">
-          <div style="background: linear-gradient(90deg, #16a34a, #047857); width: ${progressPct}%; height: 8px; border-radius: 4px; transition: width 1s linear;"></div>
+        <div style="background: var(--border); height: 8px; border-radius: 4px; position: relative; overflow: hidden;">
+          <div style="background: var(--primary); width: ${progressPct}%; height: 8px; border-radius: 4px; transition: width 1s linear;"></div>
         </div>
         <div style="display: flex; justify-content: space-between; font-size: 11px; color: var(--text-muted); margin-top: 6px;">
           <span>${I18N.t('scaleLabel')} ${tracked.weighingEquipment.split('(')[0]}</span>
@@ -1070,12 +1155,8 @@ function renderCustomerDealersTab(container, tabNavHtml) {
         <button class="audio-btn" style="padding: 10px 14px;" onclick="I18N.speak(I18N.tf('etaSpeechTemplate', { name: '${tracked.name.replace(/'/g, "\\'")}', mins: '${tracked.etaMinutes}' }))">
           ${I18N.t('speakBtn')}
         </button>
-        ${AppState.activeBooking ? `
-          <button class="btn-primary" style="flex: 1.4; min-width: 220px; padding: 10px; font-size: 13.5px; background: linear-gradient(90deg, #16a34a, #047857);" onclick="markBookingCollected()">
-            ✅ ${I18N.t('markCollectedBtn')} (${AppState.activeBooking.bookingCode})
-          </button>
-        ` : ''}
       </div>
+      ${SecurePayment.customerPanelHtml()}
     </div>
 
     <!-- 2. Section Header: Nearby Scrap Dealers -->
@@ -1130,7 +1211,7 @@ function renderCustomerProfileTab(container, tabNavHtml) {
       <td style="padding: 10px 8px;">${m.pickups} ${I18N.t('pickupsUnit')}</td>
       <td style="padding: 10px 8px; font-weight: 800;">₹${m.earnings.toLocaleString('en-IN')}</td>
       <td style="padding: 10px 8px;">
-        <span style="background: #ecfdf5; color: #166534; font-weight: 800; font-size: 11.5px; padding: 2px 7px; border-radius: var(--radius-full);">
+        <span style="background: var(--primary-light); color: var(--primary-dark); font-weight: 800; font-size: 11.5px; padding: 2px 7px; border-radius: var(--radius-full);">
           ${m.changeVsPrior}
         </span>
       </td>
@@ -1151,12 +1232,12 @@ function renderCustomerProfileTab(container, tabNavHtml) {
         ${tx.materialName}${tx.qualityGrade ? ` <span style="font-size:10.5px; color:var(--text-muted);">(${I18N.t('qualityGradeLabel')} ${tx.qualityGrade})</span>` : ''}
       </td>
       <td style="padding: 10px 8px; font-weight: 800;">
-        ${tx.weightKg} kg
+        ${tx.weighedKg ?? tx.weightKg} kg
         <div style="font-size: 11px; color: var(--text-muted); font-weight: normal;">@ ₹${tx.ratePerKg}/kg</div>
       </td>
-      <td style="padding: 10px 8px; font-weight: 900; color: #065f46;">
-        ₹${Number(tx.totalAmount).toLocaleString('en-IN')}
-        <div style="font-size: 10.5px; color: var(--text-muted); font-weight: 600;">${tx.paymentMode}</div>
+      <td style="padding: 10px 8px; font-weight: 900; color: var(--primary-dark);">
+        ₹${Number(tx.amountPaid ?? tx.totalAmount).toLocaleString('en-IN')}
+        <div style="font-size: 10.5px; color: var(--text-muted); font-weight: 600;">${tx.paymentMode} · ${paymentStatusChip(tx)}</div>
       </td>
       <td style="padding: 10px 8px;">
         <button class="btn-secondary" style="padding: 3px 9px; font-size: 11px; font-weight: 700;" onclick="viewDigitalPassport(${tx.id})">
@@ -1170,16 +1251,16 @@ function renderCustomerProfileTab(container, tabNavHtml) {
     ${tabNavHtml}
 
     <!-- 1. Customer Profile Header Card -->
-    <div class="card" style="border-left: 5px solid var(--primary); background: #ffffff; padding: 18px; margin-bottom: 14px;">
+    <div class="card" style="border-left: 5px solid var(--primary); background: var(--card); padding: 18px; margin-bottom: 14px;">
       <div style="display: flex; justify-content: space-between; align-items: flex-start; flex-wrap: wrap; gap: 14px;">
         <div style="display: flex; gap: 14px; align-items: center;">
-          <div style="font-size: 44px; background: #f0fdf4; width: 72px; height: 72px; border-radius: var(--radius-sm); display: flex; align-items: center; justify-content: center; border: 2px solid #bbf7d0;">
+          <div style="font-size: 44px; background: var(--primary-light); width: 72px; height: 72px; border-radius: var(--radius-sm); display: flex; align-items: center; justify-content: center; border: 2px solid var(--primary-line);">
             👤
           </div>
           <div>
             <div style="display: flex; align-items: center; gap: 8px;">
               <h3 style="font-size: 19px; font-weight: 900; color: var(--text-main); margin: 0;">${custName}</h3>
-              <span style="background: #dcfce7; color: #166534; font-size: 11px; font-weight: 800; padding: 2px 8px; border-radius: var(--radius-full);">
+              <span style="background: var(--success-light); color: var(--primary-dark); font-size: 11px; font-weight: 800; padding: 2px 8px; border-radius: var(--radius-full);">
                 🌿 ${I18N.t('certifiedEcoCitizenBadge')}
               </span>
             </div>
@@ -1193,7 +1274,7 @@ function renderCustomerProfileTab(container, tabNavHtml) {
         </div>
 
         <div style="text-align: right;">
-          <span style="background: #eff6ff; color: #1e40af; padding: 3px 10px; border-radius: var(--radius-full); font-size: 11.5px; font-weight: 700;">
+          <span style="background: var(--info-light); color: var(--info); padding: 3px 10px; border-radius: var(--radius-full); font-size: 11.5px; font-weight: 700;">
             🛡️ ${I18N.t('zeroLandfillVerifiedBadge')}
           </span>
           <div style="margin-top: 6px;">
@@ -1213,16 +1294,16 @@ function renderCustomerProfileTab(container, tabNavHtml) {
         <div style="font-size: 11px; color: var(--success); font-weight: 700; margin-top: 2px;">${I18N.t('divertedFromDumpsLabel')}</div>
       </div>
 
-      <div class="card" style="border-top: 4px solid #3b82f6; text-align: center; padding: 14px; margin-bottom: 0;">
+      <div class="card" style="border-top: 4px solid var(--info); text-align: center; padding: 14px; margin-bottom: 0;">
         <div style="font-size: 11.5px; color: var(--text-muted); font-weight: 700; text-transform: uppercase;">${I18N.t('totalCashReceivedLabel')}</div>
-        <div style="font-size: 28px; font-weight: 900; color: #1e40af; margin-top: 2px;">₹${summary.totalCashReceived.toLocaleString('en-IN')}</div>
+        <div style="font-size: 28px; font-weight: 900; color: var(--info); margin-top: 2px;">₹${summary.totalCashReceived.toLocaleString('en-IN')}</div>
         <div style="font-size: 11px; color: var(--text-muted); margin-top: 2px;">${I18N.t('fairDoorstepPayoutLabel')}</div>
       </div>
 
       <div class="card" style="border-top: 4px solid var(--accent); text-align: center; padding: 14px; margin-bottom: 0;">
         <div style="font-size: 11.5px; color: var(--text-muted); font-weight: 700; text-transform: uppercase;">${I18N.t('environmentalImpactLabel')}</div>
         <div style="font-size: 28px; font-weight: 900; color: var(--accent); margin-top: 2px;">🌳 ${summary.totalTreesEquivalent} ${I18N.t('treesUnit')}</div>
-        <div style="font-size: 11px; color: #166534; font-weight: 700; margin-top: 2px;">${summary.totalCo2PreventedKg} ${I18N.t('kgCo2PreventedLabel')}</div>
+        <div style="font-size: 11px; color: var(--primary-dark); font-weight: 700; margin-top: 2px;">${summary.totalCo2PreventedKg} ${I18N.t('kgCo2PreventedLabel')}</div>
       </div>
     </div>
 
@@ -1460,21 +1541,22 @@ window.viewDigitalPassport = (bookingId) => {
 
   modalEl.innerHTML = `
     <div class="modal-overlay">
-      <div class="modal-content" style="border-top: 6px solid #16a34a; max-width: 460px;">
+      <div class="modal-content" style="border-top: 6px solid var(--success); max-width: 460px;">
         <button class="modal-close" onclick="document.getElementById('passportModalContainer').innerHTML=''">✕</button>
 
         <div style="text-align: center; margin-bottom: 14px;">
           <div style="font-size: 36px;">🌱</div>
-          <h3 style="font-size: 17px; font-weight: 900; color: #14532d;">${I18N.t('digitalPassportTitle')}</h3>
+          <h3 style="font-size: 17px; font-weight: 900; color: var(--primary-dark);">${I18N.t('digitalPassportTitle')}</h3>
           <div style="font-size: 11.5px; color: var(--text-muted);">${I18N.t('bookingLabel')} <code>${tx.bookingCode}</code></div>
         </div>
 
         ${tx.photoDataUrl ? `<img src="${tx.photoDataUrl}" style="width:100%; max-height:200px; object-fit:cover; border-radius: var(--radius-sm); margin-bottom: 12px; border: 1px solid var(--border);">` : ''}
 
-        <div style="background: #f8fafc; border: 1.5px solid var(--border); padding: 14px; border-radius: var(--radius-sm); font-size: 13px; line-height: 1.7;">
+        <div style="background: var(--surface-2); border: 1.5px solid var(--border); padding: 14px; border-radius: var(--radius-sm); font-size: 13px; line-height: 1.7;">
           <div><strong>${I18N.t('materialLabel')}</strong> ${tx.materialName} ${tx.qualityGrade ? `(${I18N.t('qualityGradeLabel')} ${tx.qualityGrade})` : ''}</div>
-          <div><strong>${I18N.t('weightLabelShort')}</strong> ${tx.weightKg} kg @ ₹${tx.ratePerKg}/kg</div>
-          <div><strong>${I18N.t('cashPaidLabel')}</strong> ₹${Number(tx.totalAmount).toLocaleString('en-IN')} (${tx.paymentMode})</div>
+          <div><strong>${I18N.t('weightLabelShort')}</strong> ${tx.weighedKg ?? tx.weightKg} kg @ ₹${tx.ratePerKg}/kg${tx.weighedKg && tx.weighedKg !== tx.weightKg ? ` <span style="color:var(--text-muted)">(${I18N.t('quotedLabel')} ${tx.weightKg} kg)</span>` : ''}</div>
+          <div><strong>${I18N.t('cashPaidLabel')}</strong> ₹${Number(tx.amountPaid ?? tx.totalAmount).toLocaleString('en-IN')} (${tx.paymentMode}) ${paymentStatusChip(tx)}</div>
+          ${tx.confirmedBy ? `<div><strong>${I18N.t('releasedByLabel')}</strong> ${tx.confirmedBy === 'dealer' ? I18N.t('releasedByDealerCode') : I18N.t('releasedByCustomer')}</div>` : ''}
           <div><strong>${I18N.t('collectorLabel')}</strong> ${tx.kabadiwalaName}</div>
           <div><strong>${I18N.t('gpsHandoverProofLabel')}</strong> ${gpsText}</div>
           <div><strong>${I18N.t('requestedLabel')}</strong> ${new Date(tx.createdAt).toLocaleString()}</div>
@@ -1485,6 +1567,13 @@ window.viewDigitalPassport = (bookingId) => {
     </div>
   `;
 };
+
+function paymentStatusChip(tx) {
+  if (tx.paymentStatus === 'Disputed') return `<span class="chip chip-red">${I18N.t('paymentDisputedChip')}</span>`;
+  if (tx.paymentFlag === 'underpaid-accepted') return `<span class="chip chip-amber">${I18N.t('paymentShortAcceptedChip')}</span>`;
+  if (tx.paymentStatus === 'Released') return `<span class="chip chip-green">${I18N.t('paymentReleasedChip')}</span>`;
+  return '';
+}
 
 // Window helper functions for customer actions
 window.selectCustomerMaterial = (matId) => {
@@ -1518,11 +1607,11 @@ window.connectSmartScale = () => {
   const widget = document.getElementById('smartScaleWidget');
   if (!widget) return;
 
-  widget.innerHTML = `<div style="text-align:center; font-size:12px; font-weight:700; color:#1d4ed8; padding:7px;">🔎 ${I18N.t('scaleSearching')}</div>`;
+  widget.innerHTML = `<div style="text-align:center; font-size:12px; font-weight:700; color:var(--info); padding:7px;">🔎 ${I18N.t('scaleSearching')}</div>`;
 
   setTimeout(() => {
     if (!document.getElementById('smartScaleWidget')) return;
-    widget.innerHTML = `<div style="text-align:center; font-size:12px; font-weight:700; color:#166534; padding:7px;">🔗 ${I18N.t('scaleConnected')}</div>`;
+    widget.innerHTML = `<div style="text-align:center; font-size:12px; font-weight:700; color:var(--primary-dark); padding:7px;">🔗 ${I18N.t('scaleConnected')}</div>`;
 
     setTimeout(() => {
       if (!document.getElementById('smartScaleWidget')) return;
@@ -1688,13 +1777,13 @@ window.openVoiceAssistantModal = () => {
 
         <div style="display: flex; gap: 8px; margin-bottom: 10px;">
           <input id="assistantQueryInput" class="form-input" placeholder="${I18N.t('assistantPlaceholder')}" onkeydown="if(event.key==='Enter') askVoiceAssistant()">
-          <button class="btn-secondary" style="width: auto; padding: 0 14px; border-color: #a855f7; color: #7e22ce;" onclick="startAssistantVoiceInput()">🎙️</button>
+          <button class="btn-secondary" style="width: auto; padding: 0 14px; border-color: var(--plum); color: var(--plum);" onclick="startAssistantVoiceInput()">🎙️</button>
         </div>
         <button class="btn-primary" style="width: 100%; padding: 10px; font-size: 13px;" onclick="askVoiceAssistant()">
           ${I18N.t('assistantAskBtn')}
         </button>
 
-        <div id="assistantAnswerBox" style="margin-top: 14px; min-height: 40px; font-size: 13.5px; color: var(--text-main); background: #f0fdf4; border: 1.5px solid #86efac; border-radius: var(--radius-sm); padding: 12px; display: none;"></div>
+        <div id="assistantAnswerBox" style="margin-top: 14px; min-height: 40px; font-size: 13.5px; color: var(--text-main); background: var(--primary-light); border: 1.5px solid var(--primary-line); border-radius: var(--radius-sm); padding: 12px; display: none;"></div>
       </div>
     </div>
   `;
@@ -1736,58 +1825,6 @@ window.speakCurrentValuation = () => {
   const payout = (weightKg * AppState.selectedMaterial.customerRate).toFixed(0);
   const text = `${matName}, weight ${weightGrams} grams (${weightKg} kg). Total payout: ${Number(payout).toLocaleString('en-IN')} rupees.`;
   I18N.speak(text);
-};
-
-window.triggerCameraMock = () => {
-  const input = document.getElementById('cameraInput');
-  if (input) input.click();
-};
-
-// AI Scrap Scanner & Quality Checker — a deterministic (non-network, offline-capable)
-// classification: the same photo always identifies as the same material/grade, a
-// different photo yields a different (but stable) result. See js/priceUtils.js.
-function renderAiDetectionCard(scan) {
-  const matName = getLocalizedMatName(scan.material).split('(')[0];
-  const gradeColor = scan.grade === 'A' ? '#166534' : (scan.grade === 'B' ? '#92400e' : '#9f1239');
-  const gradeBg = scan.grade === 'A' ? '#dcfce7' : (scan.grade === 'B' ? '#fef3c7' : '#fee2e2');
-  return `
-    <div id="aiDetectionCard" style="background: #f0fdf4; border: 1.5px solid #86efac; border-radius: var(--radius-sm); padding: 12px; margin-top: 10px;">
-      <div style="display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 6px;">
-        <span style="font-size: 12.5px; font-weight: 800; color: #166534;">🤖 ${I18N.t('detectResult')}</span>
-        <span style="font-size: 11px; background: #166534; color: #fff; padding: 2px 6px; border-radius: 4px; font-weight: 700;">${scan.confidencePct}% Match</span>
-      </div>
-      <div style="font-size: 14px; font-weight: 800; color: #064e3b; margin-top: 4px;">
-        ${scan.material.icon} ${matName}
-      </div>
-      <div style="display: flex; align-items: center; gap: 8px; margin-top: 4px; flex-wrap: wrap;">
-        <div style="font-size: 12.5px; color: #15803d;">
-          💰 ${I18N.t('detectedRateLabel')} <strong>₹${scan.material.customerRate} / kg</strong>
-        </div>
-        <span style="font-size: 11px; background: ${gradeBg}; color: ${gradeColor}; padding: 2px 8px; border-radius: 4px; font-weight: 800;">
-          ${I18N.t('qualityGradeLabel')} ${scan.grade} — ${scan.gradeLabel} (${scan.qualityMultiplier}x)
-        </span>
-      </div>
-      <p style="font-size: 10.5px; color: #4d7c0f; margin-top: 6px;">${I18N.t('aiSimulatedNotice')}</p>
-    </div>
-  `;
-}
-
-window.handleImageSelected = (e) => {
-  const file = e.target.files && e.target.files[0];
-  if (!file) return;
-
-  const scan = PriceUtils.classifyImageDeterministic(file, ESETU_DATA.materials);
-  if (!scan) return;
-
-  AppState.aiScanResult = scan;
-  AppState.selectedMaterial = scan.material; // the "AI" pick becomes the active material for the calculator
-  AppState.capturedImage = file; // downscaled/attached to a booking as handover proof (see Phase 2)
-
-  const container = document.getElementById('appContent');
-  renderCustomerPage(container);
-
-  const matName = getLocalizedMatName(scan.material).split('(')[0];
-  I18N.speak(I18N.tf('scanAnalyzedSpeech', { matName, grade: scan.grade, rate: scan.material.customerRate }));
 };
 
 // Verified Handover & Proof: captures real GPS + the AI-scanned photo (downscaled) at the
@@ -1879,22 +1916,9 @@ window.bookPickupFromKabadiwala = async (kabadiName) => {
   window.scrollTo({ top: 0, behavior: 'smooth' });
 };
 
-// Stands in for the dealer-side confirmation step (this demo has no separate dealer-facing
-// booking inbox) — the customer taps this once cash/scrap has actually changed hands.
-window.markBookingCollected = async () => {
-  if (!AppState.activeBooking) return;
-  try {
-    await API.completeBooking(AppState.activeBooking.id);
-    AppState.activeBookingNotice = `✅ Handover complete! Your Digital Scrap Passport is ready in your Profile tab.`;
-    AppState.activeBooking = null;
-    AppState.deliveryStartedAt = null;
-    AppState.customerProfileData = null; // force a fresh summary fetch next time Profile is opened
-    const container = document.getElementById('appContent');
-    renderCustomerPage(container);
-  } catch (err) {
-    alert(`❌ ${I18N.tf('couldNotCompleteHandoverMsg', { error: err.message })}`);
-  }
-};
+// Handover is settled through Secure Payment (js/secure-payment.js): the dealer releases
+// it with the customer's code, or the customer confirms weight + amount received here.
+window.markBookingCollected = () => SecurePayment.openCustomerConfirm();
 
 // -------------------------------------------------------------
 // STEP 3: KABADIWALA (SCRAP DEALER) 3-PAGE DASHBOARD
@@ -1922,26 +1946,12 @@ function groupLabel(group) {
 function renderKabadiwalaPage(container) {
   if (!AppState.kabadiwalaTab) AppState.kabadiwalaTab = 'exchange';
 
-  // Top Tab Navigation for Kabadiwala (3 Sub-Pages)
-  const tabNavHtml = `
-    <div style="display: flex; gap: 8px; background: #e2e8f0; border-radius: var(--radius-sm); padding: 5px; margin-bottom: 20px;">
-      <button class="btn-secondary ${AppState.kabadiwalaTab === 'exchange' ? 'btn-primary' : ''}" 
-              style="flex: 1; padding: 10px; font-size: 13.5px; font-weight: 700;" 
-              onclick="setKabadiwalaTab('exchange')">
-        📈 ${I18N.t('exchangeTabLabel')}
-      </button>
-      <button class="btn-secondary ${AppState.kabadiwalaTab === 'warehouse' ? 'btn-primary' : ''}"
-              style="flex: 1; padding: 10px; font-size: 13.5px; font-weight: 700;"
-              onclick="setKabadiwalaTab('warehouse')">
-        🏭 ${I18N.t('warehouseTabLabel')}
-      </button>
-      <button class="btn-secondary ${AppState.kabadiwalaTab === 'profile' ? 'btn-primary' : ''}"
-              style="flex: 1; padding: 10px; font-size: 13.5px; font-weight: 700;"
-              onclick="setKabadiwalaTab('profile')">
-        👤 ${I18N.t('kabadiProfileTabLabel')}
-      </button>
-    </div>
-  `;
+  markView(`kabadiwala:${AppState.kabadiwalaTab}`);
+  const tabNavHtml = renderTabbar([
+    { key: 'exchange', label: I18N.t('exchangeTabLabel'), icon: 'chart' },
+    { key: 'warehouse', label: I18N.t('warehouseTabLabel'), icon: 'yard' },
+    { key: 'profile', label: I18N.t('kabadiProfileTabLabel'), icon: 'user' }
+  ], AppState.kabadiwalaTab, 'setKabadiwalaTab');
 
   if (AppState.kabadiwalaTab === 'exchange') {
     renderKabadiwalaExchangeTab(container, tabNavHtml);
@@ -1986,9 +1996,14 @@ function renderKabadiwalaExchangeTab(container, tabNavHtml) {
           <td style="padding: 12px 8px;">
             <span class="trend-badge ${cls}">${arrow} ${m.changePct}</span>
           </td>
-          <td style="padding: 12px 8px; color: #166534; font-weight: 700;">₹${m.dayHigh}/kg</td>
-          <td style="padding: 12px 8px; color: #991b1b; font-weight: 700;">₹${m.dayLow}/kg</td>
-          <td style="padding: 12px 8px;">${PriceUtils.buildSparklineSvg(m.sparkline, { width: 80, height: 24, color: isUp ? '#16a34a' : '#dc2626' })}</td>
+          <td style="padding: 12px 8px; color: var(--primary-dark); font-weight: 700;">₹${m.dayHigh}/kg</td>
+          <td style="padding: 12px 8px; color: var(--danger); font-weight: 700;">₹${m.dayLow}/kg</td>
+          <td style="padding: 12px 8px;">
+            <button class="spark-btn" onclick="openPriceHistory('${m.id}')" title="${I18N.t('priceHistoryTitle')}">
+              ${PriceUtils.buildSparklineSvg(m.sparkline, { width: 80, height: 24, color: isUp ? 'var(--up)' : 'var(--down)' })}
+              <span>${I18N.t('viewHistoryShort')}</span>
+            </button>
+          </td>
           <td style="padding: 12px 8px;">
             ${ESETU_DATA.recyclers.length ? `
               <button class="btn-primary" style="padding: 6px 12px; font-size: 12px; width: auto;" onclick="openCreateLotModal('${ESETU_DATA.recyclers[0].id}', '${ESETU_DATA.recyclers[0].name}')">
@@ -2033,14 +2048,14 @@ function renderKabadiwalaExchangeTab(container, tabNavHtml) {
   container.innerHTML = `
     ${tabNavHtml}
 
-    <!-- Wholesale Rate Snapshot Banner (static — updates only when a recycler publishes new rates) -->
-    <div style="background:#0f172a; color:#fff; padding:12px 20px; border-radius:var(--radius-sm); margin-bottom:20px; display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:12px;">
-      <div style="display: flex; align-items: center; gap: 10px;">
-        <span style="display:inline-block; width:10px; height:10px; border-radius:50%; background:#22c55e;"></span>
-        <strong style="color:#38bdf8; font-size:14px; letter-spacing:0.5px; text-transform: uppercase;">${I18N.t('wholesaleRatesTitle')}</strong>
-        <span style="background: rgba(255,255,255,0.1); font-size: 11.5px; padding: 3px 9px; border-radius: 4px; color: #cbd5e1;">${I18N.t('segregatedByType')}</span>
+    <!-- Wholesale Rate Snapshot (static — updates only when a recycler publishes new rates) -->
+    <div class="page-band">
+      <div>
+        <p class="eyebrow">${I18N.t('segregatedByType')}</p>
+        <h2>${I18N.t('wholesaleRatesTitle')}</h2>
+        <p>${I18N.t('wholesaleBandHint')}</p>
       </div>
-      <button class="audio-btn" style="background:#1e293b; color:#38bdf8; border:1px solid #334155;" onclick="I18N.speak(I18N.t('wholesaleRatesSpeech'))">
+      <button class="audio-btn" onclick="I18N.speak(I18N.t('wholesaleRatesSpeech'))">
         ${I18N.t('speakBtn')}
       </button>
     </div>
@@ -2110,7 +2125,7 @@ function renderKabadiwalaWarehouseTab(container, tabNavHtml) {
       <div class="review-item">
         <div class="review-author">
           <span>🚲 ${rev.author}</span>
-          <span style="color: #b45309;">★ ${rev.rating}</span>
+          <span style="color: var(--accent-ink);">★ ${rev.rating}</span>
         </div>
         <div class="review-text">"${rev.text}"</div>
       </div>
@@ -2124,37 +2139,37 @@ function renderKabadiwalaWarehouseTab(container, tabNavHtml) {
               <h4 style="font-size: 15px; font-weight: 800;">${r.name}</h4>
               <span class="rec-badge-gov">🛡️ ${r.cpcbRegNo}</span>
               ${r.cpcbVerified
-                ? `<span style="background:#dcfce7; color:#166534; font-size:10.5px; font-weight:800; padding:2px 7px; border-radius:4px; margin-left:4px;">✅ ${I18N.t('cpcbVerifiedBadge')}</span>`
-                : `<span style="background:#fef3c7; color:#92400e; font-size:10.5px; font-weight:800; padding:2px 7px; border-radius:4px; margin-left:4px;">⚠️ ${I18N.t('cpcbUnverifiedBadge')}</span>`}
+                ? `<span style="background:var(--success-light); color:var(--primary-dark); font-size:10.5px; font-weight:800; padding:2px 7px; border-radius:4px; margin-left:4px;">✅ ${I18N.t('cpcbVerifiedBadge')}</span>`
+                : `<span style="background:var(--accent-light); color:var(--accent-ink); font-size:10.5px; font-weight:800; padding:2px 7px; border-radius:4px; margin-left:4px;">⚠️ ${I18N.t('cpcbUnverifiedBadge')}</span>`}
               ${(r.rates && r.rates[bestBuyerFocusMat.symbol] || bestBuyerFocusMat.recyclerRate) >= bestRateForFocusMat
-                ? `<span style="background:#ede9fe; color:#5b21b6; font-size:10.5px; font-weight:800; padding:2px 7px; border-radius:4px; margin-left:4px;">🏆 ${I18N.t('bestPayerBadge')}</span>`
+                ? `<span style="background:var(--plum-light); color:var(--plum); font-size:10.5px; font-weight:800; padding:2px 7px; border-radius:4px; margin-left:4px;">🏆 ${I18N.t('bestPayerBadge')}</span>`
                 : ''}
             </div>
             <div style="text-align: right;">
-              <div style="font-size: 13px; font-weight: 800; color: #b45309;">★ ${r.rating}</div>
+              <div style="font-size: 13px; font-weight: 800; color: var(--accent-ink);">★ ${r.rating}</div>
               <div style="font-size: 11px; color: var(--text-muted);">${r.kabadiwalaReviewsCount} ${I18N.t('dealerReviewsUnit')}</div>
             </div>
           </div>
 
           <!-- Deep Facility Address & Operating Details -->
-          <div style="background: #f8fafc; padding: 10px 12px; border: 1px solid var(--border); border-radius: var(--radius-sm); margin: 10px 0; font-size: 12px; line-height: 1.5;">
+          <div style="background: var(--surface-2); padding: 10px 12px; border: 1px solid var(--border); border-radius: var(--radius-sm); margin: 10px 0; font-size: 12px; line-height: 1.5;">
             <div>📍 <strong>${I18N.t('facilityLabel')}</strong> ${r.fullAddress}</div>
             <div style="display: flex; justify-content: space-between; margin-top: 4px;">
               <span>📍 ${I18N.t('distanceLabel')} <strong>${r.liveDistanceKm !== null ? `${r.liveDistanceKm} km ✅` : `${r.distanceKm} km`}</strong></span>
               <span>📦 ${I18N.t('minBatchLabel')} <strong>${r.minLotKg} kg</strong></span>
             </div>
-            <div style="color: #065f46; font-weight: 700; margin-top: 4px;">
+            <div style="color: var(--primary-dark); font-weight: 700; margin-top: 4px;">
               💳 ${r.paymentTerms}
             </div>
           </div>
 
           <!-- Live Recycler Collection Truck ETA & In-Transit Tracking -->
-          <div style="background: #eff6ff; border: 1.5px solid #bfdbfe; border-radius: var(--radius-sm); padding: 10px 12px; margin: 10px 0; font-size: 12px;">
+          <div style="background: var(--info-light); border: 1.5px solid var(--info-line); border-radius: var(--radius-sm); padding: 10px 12px; margin: 10px 0; font-size: 12px;">
             <div style="display: flex; justify-content: space-between; align-items: center;">
-              <span style="color: #1e40af; font-weight: 800;">🚚 ${I18N.t('dispatchEtaLabel')}</span>
-              <span style="background: #dbeafe; color: #1e3a8a; font-weight: 800; padding: 2px 8px; border-radius: 4px;">~${r.collectionTruckETA} mins</span>
+              <span style="color: var(--info); font-weight: 800;">🚚 ${I18N.t('dispatchEtaLabel')}</span>
+              <span style="background: var(--info-light); color: var(--info); font-weight: 800; padding: 2px 8px; border-radius: 4px;">~${r.collectionTruckETA} mins</span>
             </div>
-            <div style="color: #1d4ed8; margin-top: 4px; font-size: 11.5px;">${r.collectionTruckStatus}</div>
+            <div style="color: var(--info); margin-top: 4px; font-size: 11.5px;">${r.collectionTruckStatus}</div>
             <div style="color: var(--text-muted); font-size: 11px; margin-top: 4px;">⚖️ <strong>${I18N.t('weighbridgeLabel')}</strong> ${r.weighbridgeTech}</div>
             <div style="color: var(--text-muted); font-size: 11px;">⏰ <strong>${I18N.t('gateHoursLabel')}</strong> ${r.operatingHours}</div>
           </div>
@@ -2167,7 +2182,7 @@ function renderKabadiwalaWarehouseTab(container, tabNavHtml) {
               const effectiveRate = (r.rates && r.rates[sym]) || mat.recyclerRate;
               const isOverride = !!(r.rates && r.rates[sym]);
               return `
-                <span style="background:#ecfdf5; color:#065f46; font-size:11.5px; padding:3px 7px; border-radius:4px; font-weight:700;" title="${isOverride ? I18N.t('recyclerPublishedRateTitle') : I18N.t('platformSharedRateTitle')}">
+                <span style="background:var(--primary-light); color:var(--primary-dark); font-size:11.5px; padding:3px 7px; border-radius:4px; font-weight:700;" title="${isOverride ? I18N.t('recyclerPublishedRateTitle') : I18N.t('platformSharedRateTitle')}">
                   ${mat.symbol}: ₹${effectiveRate}/kg${isOverride ? ' ✦' : ''}
                 </span>
               `;
@@ -2178,7 +2193,7 @@ function renderKabadiwalaWarehouseTab(container, tabNavHtml) {
         <div>
           <!-- Action Links: Google Maps & Create Lot -->
           <div style="display: flex; gap: 8px; flex-direction: column; margin-bottom: 10px;">
-            <a href="${r.googleMapsUrl}" target="_blank" class="btn-secondary" style="width: 100%; display: inline-flex; align-items: center; justify-content: center; gap: 6px; font-size: 12px; padding: 8px; text-decoration: none; border-color: #3b82f6; color: #1d4ed8; font-weight: 700;">
+            <a href="${r.googleMapsUrl}" target="_blank" class="btn-secondary" style="width: 100%; display: inline-flex; align-items: center; justify-content: center; gap: 6px; font-size: 12px; padding: 8px; text-decoration: none; border-color: var(--info); color: var(--info); font-weight: 700;">
               🗺️ ${I18N.t('openMapsBtn')}
             </a>
             <button class="btn-primary" style="width: 100%; padding: 8px; font-size: 12px;" onclick="openCreateLotModal('${r.id}', '${r.name}')">
@@ -2236,7 +2251,7 @@ function renderKabadiwalaWarehouseTab(container, tabNavHtml) {
           </div>
           <div style="text-align: right;">
             <div style="font-size: 12px; opacity: 0.85;">${I18N.t('estMargin')}</div>
-            <div style="font-size: 22px; font-weight: 900; color: #86efac;">+₹${totalEstimatedProfit.toLocaleString('en-IN')} (28.4%)</div>
+            <div style="font-size: 22px; font-weight: 900; color: var(--primary-line);">+₹${totalEstimatedProfit.toLocaleString('en-IN')} (28.4%)</div>
           </div>
         </div>
       </div>
@@ -2267,6 +2282,9 @@ function renderKabadiwalaWarehouseTab(container, tabNavHtml) {
         </div>
       </div>
     </div>
+
+    <!-- Doorstep pickups: Secure Payment to Collector (js/secure-payment.js) -->
+    ${SecurePayment.dealerCardHtml()}
 
     <!-- Collection Route Optimizer & Smart Collection Day -->
     <div class="desktop-grid-2" style="gap: 16px; margin-bottom: 20px;">
@@ -2329,7 +2347,7 @@ function renderKabadiwalaWarehouseTab(container, tabNavHtml) {
           <h3 class="card-title">${I18N.t('wholesaleCompareTitle')}</h3>
           <p class="card-subtitle">${I18N.t('dispatchLotsSubtitle')}</p>
         </div>
-        <span class="badge" style="background: #e0f2fe; color: #0369a1; font-weight: 700; padding: 6px 12px; font-size: 12px;">
+        <span class="badge" style="background: var(--info-light); color: var(--info); font-weight: 700; padding: 6px 12px; font-size: 12px;">
           🟢 ${ESETU_DATA.recyclers.length} ${ESETU_DATA.recyclers.length === 1 ? I18N.t('recyclerSingular') : I18N.t('recyclerPlural')}
         </span>
       </div>
@@ -2350,6 +2368,7 @@ function renderKabadiwalaWarehouseTab(container, tabNavHtml) {
     <!-- Modal Container -->
     <div id="lotModalContainer"></div>
   `;
+  SecurePayment.loadDealerPickups();
 }
 
 // -------------------------------------------------------------
@@ -2373,20 +2392,20 @@ function renderKabadiwalaProfileTab(container, tabNavHtml) {
     const isUp = item.gainVsYesterday.includes('▲');
     const isDown = item.gainVsYesterday.includes('▼');
     const badgeColor = isUp ? 'var(--success)' : (isDown ? 'var(--danger)' : 'var(--text-muted)');
-    const badgeBg = isUp ? 'var(--success-light)' : (isDown ? 'var(--danger-light)' : '#f1f5f9');
+    const badgeBg = isUp ? 'var(--success-light)' : (isDown ? 'var(--danger-light)' : 'var(--surface-2)');
 
     // Visual percentage bar
     const barWidth = Math.round((item.weightKg / 200) * 100);
 
     return `
-      <tr style="border-bottom: 1px solid var(--border); background: ${isToday ? '#f0fdf4' : 'transparent'};">
+      <tr style="border-bottom: 1px solid var(--border); background: ${isToday ? 'var(--primary-light)' : 'transparent'};">
         <td style="padding: 12px 10px;">
           <strong>${item.day}</strong>
           <div style="font-size: 11.5px; color: var(--text-muted);">${item.date}</div>
         </td>
         <td style="padding: 12px 10px;">
           <div style="font-size: 15px; font-weight: 800; color: var(--primary-dark);">${item.weightKg} kg</div>
-          <div style="background: #e2e8f0; height: 6px; border-radius: 3px; width: 100px; margin-top: 4px;">
+          <div style="background: var(--border); height: 6px; border-radius: 3px; width: 100px; margin-top: 4px;">
             <div style="background: var(--primary); height: 6px; border-radius: 3px; width: ${barWidth}%;"></div>
           </div>
         </td>
@@ -2409,16 +2428,16 @@ function renderKabadiwalaProfileTab(container, tabNavHtml) {
     ${tabNavHtml}
 
     <!-- 1. Dealer Profile Header Card -->
-    <div class="card" style="border-left: 6px solid var(--primary); background: #ffffff;">
+    <div class="card" style="border-left: 6px solid var(--primary); background: var(--card);">
       <div style="display: flex; justify-content: space-between; align-items: flex-start; flex-wrap: wrap; gap: 16px;">
         <div style="display: flex; gap: 16px; align-items: center;">
-          <div style="font-size: 48px; background: #f0fdf4; width: 80px; height: 80px; border-radius: var(--radius-md); display: flex; align-items: center; justify-content: center; border: 2px solid #bbf7d0;">
+          <div style="font-size: 48px; background: var(--primary-light); width: 80px; height: 80px; border-radius: var(--radius-md); display: flex; align-items: center; justify-content: center; border: 2px solid var(--primary-line);">
             👨🏽‍💼
           </div>
           <div>
             <div style="display: flex; align-items: center; gap: 10px;">
               <h2 style="font-size: 22px; font-weight: 900; color: var(--text-main);">${dealerName}</h2>
-              <span style="background: #dcfce7; color: #166534; font-size: 11.5px; font-weight: 800; padding: 3px 10px; border-radius: var(--radius-full);">
+              <span style="background: var(--success-light); color: var(--primary-dark); font-size: 11.5px; font-weight: 800; padding: 3px 10px; border-radius: var(--radius-full);">
                 ✅ ${I18N.t('certifiedPartnerBadge')}
               </span>
             </div>
@@ -2432,7 +2451,7 @@ function renderKabadiwalaProfileTab(container, tabNavHtml) {
         </div>
 
         <div style="text-align: right;">
-          <span style="background: #eff6ff; color: #1e40af; padding: 4px 12px; border-radius: var(--radius-full); font-size: 12.5px; font-weight: 700;">
+          <span style="background: var(--info-light); color: var(--info); padding: 4px 12px; border-radius: var(--radius-full); font-size: 12.5px; font-weight: 700;">
             ⚖️ ${I18N.t('certifiedScaleBadge')}
           </span>
           <div style="margin-top: 8px; display: flex; gap: 8px; justify-content: flex-end; flex-wrap: wrap;">
@@ -2455,16 +2474,16 @@ function renderKabadiwalaProfileTab(container, tabNavHtml) {
         <div style="font-size: 12px; color: var(--success); font-weight: 700; margin-top: 2px;">+30.2% ▲ ${I18N.t('higherThanYesterday')}</div>
       </div>
 
-      <div class="card" style="border-top: 4px solid #3b82f6; text-align: center;">
+      <div class="card" style="border-top: 4px solid var(--info); text-align: center;">
         <div style="font-size: 12.5px; color: var(--text-muted); font-weight: 700; text-transform: uppercase;">${I18N.t('sevenDayVolumeLabel')}</div>
-        <div style="font-size: 32px; font-weight: 900; color: #1e40af; margin-top: 4px;">${totalWeeklyKg} kg</div>
+        <div style="font-size: 32px; font-weight: 900; color: var(--info); margin-top: 4px;">${totalWeeklyKg} kg</div>
         <div style="font-size: 12px; color: var(--text-muted); margin-top: 2px;">${I18N.t('processedAcrossPickups')} (${totalItemsCount})</div>
       </div>
 
       <div class="card" style="border-top: 4px solid var(--accent); text-align: center;">
         <div style="font-size: 12.5px; color: var(--text-muted); font-weight: 700; text-transform: uppercase;">${I18N.t('sevenDayRealizationLabel')}</div>
         <div style="font-size: 32px; font-weight: 900; color: var(--accent); margin-top: 4px;">₹${totalWeeklyRev.toLocaleString('en-IN')}</div>
-        <div style="font-size: 12px; color: #166534; font-weight: 700; margin-top: 2px;">${I18N.t('avgGrossMarginLabel')}: 28.4%</div>
+        <div style="font-size: 12px; color: var(--primary-dark); font-weight: 700; margin-top: 2px;">${I18N.t('avgGrossMarginLabel')}: 28.4%</div>
       </div>
     </div>
 
@@ -2507,8 +2526,8 @@ function renderKabadiwalaProfileTab(container, tabNavHtml) {
               <span>🔌 ${I18N.t('streamCopperWires')}</span>
               <span>38% (335 kg)</span>
             </div>
-            <div style="background:#e2e8f0; height:8px; border-radius:4px; margin-top:4px;">
-              <div style="background:#047857; width:38%; height:8px; border-radius:4px;"></div>
+            <div style="background:var(--border); height:8px; border-radius:4px; margin-top:4px;">
+              <div style="background:var(--primary); width:38%; height:8px; border-radius:4px;"></div>
             </div>
           </div>
           <div>
@@ -2516,8 +2535,8 @@ function renderKabadiwalaProfileTab(container, tabNavHtml) {
               <span>💻 ${I18N.t('streamHighGradePcbs')}</span>
               <span>28% (248 kg)</span>
             </div>
-            <div style="background:#e2e8f0; height:8px; border-radius:4px; margin-top:4px;">
-              <div style="background:#3b82f6; width:28%; height:8px; border-radius:4px;"></div>
+            <div style="background:var(--border); height:8px; border-radius:4px; margin-top:4px;">
+              <div style="background:var(--info); width:28%; height:8px; border-radius:4px;"></div>
             </div>
           </div>
           <div>
@@ -2525,8 +2544,8 @@ function renderKabadiwalaProfileTab(container, tabNavHtml) {
               <span>🔋 ${I18N.t('streamLithiumBatteries')}</span>
               <span>15% (132 kg)</span>
             </div>
-            <div style="background:#e2e8f0; height:8px; border-radius:4px; margin-top:4px;">
-              <div style="background:#ea580c; width:15%; height:8px; border-radius:4px;"></div>
+            <div style="background:var(--border); height:8px; border-radius:4px; margin-top:4px;">
+              <div style="background:var(--accent); width:15%; height:8px; border-radius:4px;"></div>
             </div>
           </div>
           <div>
@@ -2534,13 +2553,13 @@ function renderKabadiwalaProfileTab(container, tabNavHtml) {
               <span>📺 ${I18N.t('streamCrtDisplayGlass')}</span>
               <span>19% (168 kg)</span>
             </div>
-            <div style="background:#e2e8f0; height:8px; border-radius:4px; margin-top:4px;">
-              <div style="background:#8b5cf6; width:19%; height:8px; border-radius:4px;"></div>
+            <div style="background:var(--border); height:8px; border-radius:4px; margin-top:4px;">
+              <div style="background:var(--plum); width:19%; height:8px; border-radius:4px;"></div>
             </div>
           </div>
         </div>
 
-        <div style="background: #f8fafc; border: 1.5px solid var(--border); padding: 16px; border-radius: var(--radius-sm); font-size: 13px; line-height: 1.6;">
+        <div style="background: var(--surface-2); border: 1.5px solid var(--border); padding: 16px; border-radius: var(--radius-sm); font-size: 13px; line-height: 1.6;">
           <h4 style="font-weight: 800; color: var(--primary-dark); margin-bottom: 6px;">♻️ ${I18N.t('formalChannelAdvantageTitle')}</h4>
           <p>${I18N.tf('formalChannelIntro', { weight: totalWeeklyKg, yard: yardName })}</p>
           <ul style="padding-left: 18px; margin-top: 6px; color: var(--text-muted);">
@@ -2572,7 +2591,7 @@ function renderKabadiwalaProfileTab(container, tabNavHtml) {
             ${I18N.t('targetRecyclerLabel')} <strong>${recyclerName}</strong>
           </p>
 
-          <div style="background: #f8fafc; padding: 12px; border-radius: var(--radius-sm); border: 1px solid var(--border); font-size: 12.5px; margin-bottom: 14px;">
+          <div style="background: var(--surface-2); padding: 12px; border-radius: var(--radius-sm); border: 1px solid var(--border); font-size: 12.5px; margin-bottom: 14px;">
             <div>${I18N.t('lotReferenceLabel')} <strong>${lotNo}</strong></div>
             <div id="modalGpsLine">${I18N.t('gpsHandoverCoordsLabel')} <strong>📡 ${I18N.t('locatingGps')}</strong></div>
             <div>${I18N.t('timestampLabel')} <strong>${new Date().toLocaleString()}</strong></div>
@@ -2608,15 +2627,15 @@ function renderKabadiwalaProfileTab(container, tabNavHtml) {
           </div>
 
           <!-- Digital QR Handover Manifest -->
-          <div style="background: #eff6ff; border: 1.5px dashed #3b82f6; padding: 16px; border-radius: var(--radius-sm); text-align: center; margin: 16px 0;">
-            <div style="font-size: 13px; font-weight: 800; color: #1e40af; margin-bottom: 8px;">
+          <div style="background: var(--info-light); border: 1.5px dashed var(--info); padding: 16px; border-radius: var(--radius-sm); text-align: center; margin: 16px 0;">
+            <div style="font-size: 13px; font-weight: 800; color: var(--info); margin-bottom: 8px;">
               📱 ${I18N.t('qrSlipTitle')}
             </div>
             <div style="background: #fff; width: 140px; height: 140px; margin: 0 auto; display: flex; align-items: center; justify-content: center; border: 2px solid #000; font-family: monospace; font-size: 11px; padding: 6px;">
               [QR: ${lotNo}]<br>
               ${I18N.t('cpcbTraceableLabel')}
             </div>
-            <p style="font-size: 11.5px; color: #1d4ed8; margin-top: 8px;">
+            <p style="font-size: 11.5px; color: var(--info); margin-top: 8px;">
               ${I18N.t('qrSlipDesc')}
             </p>
           </div>
@@ -2661,9 +2680,9 @@ function renderKabadiwalaProfileTab(container, tabNavHtml) {
 
     const { status, deviationPct } = PriceUtils.evaluateFairPrice(proposedRate, mat.recyclerRate);
     const styles = {
-      fair: { bg: '#dcfce7', color: '#166534', label: `✅ ${I18N.t('fairPriceFair')}` },
-      low: { bg: '#fee2e2', color: '#991b1b', label: `⚠️ ${I18N.t('fairPriceLow')} (${deviationPct}%)` },
-      high: { bg: '#fef3c7', color: '#92400e', label: `⚠️ ${I18N.t('fairPriceHigh')} (+${deviationPct}%)` }
+      fair: { bg: 'var(--success-light)', color: 'var(--primary-dark)', label: `✅ ${I18N.t('fairPriceFair')}` },
+      low: { bg: 'var(--danger-light)', color: 'var(--danger)', label: `⚠️ ${I18N.t('fairPriceLow')} (${deviationPct}%)` },
+      high: { bg: 'var(--accent-light)', color: 'var(--accent-ink)', label: `⚠️ ${I18N.t('fairPriceHigh')} (+${deviationPct}%)` }
     }[status];
 
     badgeEl.innerHTML = `
@@ -2770,7 +2789,7 @@ window.loadPoolableBookings = async () => {
     resultEl.innerHTML = groupEntries.map(([materialId, list]) => {
       const totalWeight = list.reduce((s, b) => s + b.weightKg, 0);
       return `
-        <div style="background:#f8fafc; border:1px solid var(--border); border-radius:6px; padding:8px 10px; margin-bottom:6px; font-size:12px; display:flex; justify-content:space-between; align-items:center; gap:8px;">
+        <div style="background:var(--surface-2); border:1px solid var(--border); border-radius:6px; padding:8px 10px; margin-bottom:6px; font-size:12px; display:flex; justify-content:space-between; align-items:center; gap:8px;">
           <span>${list[0].materialName} — ${list.length} ${I18N.t('pickupsUnit')} (${totalWeight.toFixed(2)} kg)</span>
           <button class="btn-primary" style="padding:5px 10px; font-size:11.5px; width:auto;" onclick='poolTheseRequests(${JSON.stringify(list.map(b => b.id))})'>
             ${I18N.t('poolBtn')}
@@ -2820,6 +2839,7 @@ window.setMyCollectionDay = async () => {
 // STEP 4: RECYCLER PORTAL (CPCB EPR COMPLIANCE & RATES)
 // -------------------------------------------------------------
 function renderRecyclerPage(container) {
+  markView('recycler');
   const lotsHtml = ESETU_DATA.lots.map(lot => {
     const isPaid = lot.paymentStatus === 'Paid';
     const isVerified = lot.eprCertIssued;
@@ -2831,7 +2851,7 @@ function renderRecyclerPage(container) {
     const benchmarkMat = ESETU_DATA.materials.find(m => m.symbol === lot.symbol);
     const fairCheck = benchmarkMat ? PriceUtils.evaluateFairPrice(lot.agreedRate, benchmarkMat.recyclerRate) : null;
     const fraudBadge = (fairCheck && fairCheck.status !== 'fair') ? `
-      <span style="font-size: 10.5px; background: #fee2e2; color: #991b1b; padding: 2px 7px; border-radius: 4px; font-weight: 800; margin-left: 6px;">
+      <span style="font-size: 10.5px; background: var(--danger-light); color: var(--danger); padding: 2px 7px; border-radius: 4px; font-weight: 800; margin-left: 6px;">
         ⚠️ ${I18N.t('rateFlaggedBadge')} (${fairCheck.deviationPct}%)
       </span>
     ` : '';
@@ -2840,7 +2860,7 @@ function renderRecyclerPage(container) {
       <div class="card" style="border-left: 5px solid ${isPaid ? 'var(--success)' : 'var(--accent)'}; margin-bottom: 14px;">
         <div style="display: flex; justify-content: space-between; align-items: flex-start;">
           <div>
-            <span style="font-size: 11.5px; background: #e0e7ff; color: #3730a3; padding: 3px 8px; border-radius: 4px; font-weight: 800;">
+            <span style="font-size: 11.5px; background: var(--info-light); color: var(--info); padding: 3px 8px; border-radius: 4px; font-weight: 800;">
               ${lot.lotId}
             </span>
             <h4 style="font-size: 15px; font-weight: 800; margin-top: 5px;">${lot.material}${fraudBadge}</h4>
@@ -2858,7 +2878,7 @@ function renderRecyclerPage(container) {
           </div>
         </div>
 
-        <div style="background: #f8fafc; padding: 10px 12px; border-radius: var(--radius-sm); margin: 10px 0; font-size: 12px;">
+        <div style="background: var(--surface-2); padding: 10px 12px; border-radius: var(--radius-sm); margin: 10px 0; font-size: 12px;">
           <div>${I18N.t('netWeightLabel')} <strong>${lot.weightKg} kg</strong> @ ₹${lot.agreedRate}/kg${benchmarkMat ? ` <span style="color:var(--text-muted); font-weight:normal;">(${I18N.t('benchmarkLabel')} ₹${benchmarkMat.recyclerRate}/kg)</span>` : ''}</div>
           <div>${I18N.t('settlementLabel')} <strong>${lot.paymentMethod}</strong></div>
           <div>${I18N.t('gpsOriginLabel')} <strong>${lot.gpsLocation}</strong></div>
@@ -2886,18 +2906,18 @@ function renderRecyclerPage(container) {
 
   container.innerHTML = `
     <!-- Verified CPCB License Banner -->
-    <div style="background: #eff6ff; border: 2px solid #3b82f6; border-radius: var(--radius-md); padding: 18px 24px; margin-bottom: 20px;">
+    <div style="background: var(--info-light); border: 2px solid var(--info); border-radius: var(--radius-md); padding: 18px 24px; margin-bottom: 20px;">
       <div style="display: flex; justify-content: space-between; align-items: center;">
         <div style="display: flex; align-items: center; gap: 12px;">
           <span style="font-size: 32px;">🛡️</span>
           <div>
-            <div style="font-size: 12px; font-weight: 800; color: #1e40af; text-transform: uppercase;">
+            <div style="font-size: 12px; font-weight: 800; color: var(--info); text-transform: uppercase;">
               ${I18N.t('govBadgeText')}
             </div>
-            <div style="font-size: 16px; font-weight: 800; color: #1e3a8a;">
+            <div style="font-size: 16px; font-weight: 800; color: var(--info);">
               ${AppState.user.name}
             </div>
-            <div style="font-size: 12px; color: #2563eb; font-family: monospace;">
+            <div style="font-size: 12px; color: var(--info); font-family: monospace;">
               ${I18N.t('govRegIdLabel')} ${AppState.user.govRegNo || '—'}
             </div>
           </div>
@@ -2952,14 +2972,14 @@ function renderRecyclerPage(container) {
 
           <div style="display: flex; flex-direction: column; gap: 10px;">
             ${ESETU_DATA.materials.map(m => `
-              <div style="background: #f8fafc; border: 1px solid var(--border); padding: 12px 16px; border-radius: var(--radius-sm); font-size: 13.5px; display: flex; justify-content: space-between; align-items: center;">
+              <div style="background: var(--surface-2); border: 1px solid var(--border); padding: 12px 16px; border-radius: var(--radius-sm); font-size: 13.5px; display: flex; justify-content: space-between; align-items: center;">
                 <div style="font-weight: 700;">${m.icon} ${getLocalizedMatName(m)} (${m.symbol})</div>
                 <div style="display: flex; align-items: center; gap: 12px;">
                   <span style="color: var(--primary-text); font-weight: 900; font-size: 15px;">₹${m.recyclerRate}/kg</span>
                   <button class="btn-secondary" style="padding: 4px 10px; font-size: 12px;" onclick="promptRateUpdate('${m.id}')">
                     ${I18N.t('editRateBtn')}
                   </button>
-                  <button class="btn-secondary" style="padding: 4px 10px; font-size: 12px; border-color:#a855f7; color:#7e22ce;" onclick="promptOwnRateUpdate('${m.id}')" title="${I18N.t('ownRateHint')}">
+                  <button class="btn-secondary" style="padding: 4px 10px; font-size: 12px; border-color:var(--plum); color:var(--plum);" onclick="promptOwnRateUpdate('${m.id}')" title="${I18N.t('ownRateHint')}">
                     🏆 ${I18N.t('setOwnRateBtn')}
                   </button>
                 </div>
@@ -3071,12 +3091,12 @@ function renderRecyclerPage(container) {
     const certContainer = document.getElementById('certModalContainer');
     certContainer.innerHTML = `
       <div class="modal-overlay">
-        <div class="modal-content" style="border-top: 6px solid #16a34a; max-width: 500px;">
+        <div class="modal-content" style="border-top: 6px solid var(--success); max-width: 500px;">
           <button class="modal-close" onclick="document.getElementById('certModalContainer').innerHTML=''">✕</button>
           
           <div style="text-align: center; margin-bottom: 14px;">
             <div style="font-size: 36px;">📜</div>
-            <h3 style="font-size: 17px; font-weight: 900; color: #14532d;">
+            <h3 style="font-size: 17px; font-weight: 900; color: var(--primary-dark);">
               ${I18N.t('govOfIndiaCertTitle')}
             </h3>
             <div style="font-size: 11.5px; color: var(--text-muted);">
@@ -3084,7 +3104,7 @@ function renderRecyclerPage(container) {
             </div>
           </div>
 
-          <div style="background: #f8fafc; border: 1.5px solid var(--border); padding: 14px; border-radius: var(--radius-sm); font-size: 13px; line-height: 1.6;">
+          <div style="background: var(--surface-2); border: 1.5px solid var(--border); padding: 14px; border-radius: var(--radius-sm); font-size: 13px; line-height: 1.6;">
             <div><strong>${I18N.t('certificateIdLabel')}</strong> CPCB-EPR-CERT-${lot.lotId}</div>
             <div><strong>${I18N.t('authorizedRecyclerLabel')}</strong> ${AppState.user.name}</div>
             <div><strong>${I18N.t('cpcbRegNoLabel')}</strong> ${AppState.user.govRegNo || '—'}</div>
@@ -3093,7 +3113,7 @@ function renderRecyclerPage(container) {
             <div><strong>${I18N.t('netVerifiedWeightLabel')}</strong> ${lot.weightKg} kg</div>
             <div><strong>${I18N.t('gpsGeotagLabel')}</strong> ${lot.gpsLocation}</div>
             <div><strong>${I18N.t('dateTimestampLabel')}</strong> ${lot.date}</div>
-            <div><strong>${I18N.t('auditStatusLabel')}</strong> <span style="color: #16a34a; font-weight: 800;">${I18N.t('verifiedAndPaidStatus')}</span></div>
+            <div><strong>${I18N.t('auditStatusLabel')}</strong> <span style="color: var(--success); font-weight: 800;">${I18N.t('verifiedAndPaidStatus')}</span></div>
           </div>
 
           <div style="margin-top: 16px; text-align: center;">
@@ -3128,7 +3148,7 @@ window.openHotspotMap = () => {
           🗺️ ${I18N.t('hotspotMapTitle')}
         </h3>
         <p style="font-size: 11.5px; color: var(--text-muted); margin-bottom: 10px;">⚠️ ${I18N.t('hotspotMapOfflineNotice')}</p>
-        <div id="hotspotMapDiv" style="width: 100%; height: 380px; border-radius: var(--radius-sm); border: 1px solid var(--border); background: #e2e8f0;"></div>
+        <div id="hotspotMapDiv" style="width: 100%; height: 380px; border-radius: var(--radius-sm); border: 1px solid var(--border); background: var(--border);"></div>
       </div>
     </div>
   `;
@@ -3145,9 +3165,9 @@ window.openHotspotMap = () => {
   // Collect every coordinate the platform actually has: dealers, recyclers, and completed
   // pickups/lots — real registered/transaction data, not decorative placeholder pins.
   const points = [];
-  ESETU_DATA.kabadiwalas.forEach(k => { if (typeof k.latitude === 'number') points.push({ lat: k.latitude, lng: k.longitude, label: `🚲 ${k.name} (${I18N.t('dealerMapLabel')})`, color: '#16a34a' }); });
-  ESETU_DATA.recyclers.forEach(r => { if (typeof r.latitude === 'number') points.push({ lat: r.latitude, lng: r.longitude, label: `🏭 ${r.name} (${I18N.t('recyclerMapLabel')})`, color: '#2563eb' }); });
-  ESETU_DATA.lots.forEach(l => { if (typeof l.gpsLat === 'number') points.push({ lat: l.gpsLat, lng: l.gpsLng, label: `📦 ${I18N.t('lotMapLabel')} ${l.lotId}`, color: '#a855f7' }); });
+  ESETU_DATA.kabadiwalas.forEach(k => { if (typeof k.latitude === 'number') points.push({ lat: k.latitude, lng: k.longitude, label: `🚲 ${k.name} (${I18N.t('dealerMapLabel')})`, color: '#2c7a47' }); });
+  ESETU_DATA.recyclers.forEach(r => { if (typeof r.latitude === 'number') points.push({ lat: r.latitude, lng: r.longitude, label: `🏭 ${r.name} (${I18N.t('recyclerMapLabel')})`, color: '#2d4f86' }); });
+  ESETU_DATA.lots.forEach(l => { if (typeof l.gpsLat === 'number') points.push({ lat: l.gpsLat, lng: l.gpsLng, label: `📦 ${I18N.t('lotMapLabel')} ${l.lotId}`, color: '#6d3f7d' }); });
 
   const center = points.length
     ? [points.reduce((s, p) => s + p.lat, 0) / points.length, points.reduce((s, p) => s + p.lng, 0) / points.length]
@@ -3197,7 +3217,7 @@ window.openSafetyModal = () => {
     const safeMethod = localizedField(guide, 'safeMethod');
 
     return `
-      <div style="border-left: 5px solid ${guide.color}; background: #f8fafc; padding: 14px; border-radius: var(--radius-sm); margin-bottom: 14px;">
+      <div style="border-left: 5px solid ${guide.color}; background: var(--surface-2); padding: 14px; border-radius: var(--radius-sm); margin-bottom: 14px;">
         <div style="display: flex; justify-content: space-between; align-items: flex-start;">
           <h4 style="font-size: 14.5px; font-weight: 800; color: ${guide.color};">
             ${guide.icon} ${title}
@@ -3207,9 +3227,9 @@ window.openSafetyModal = () => {
           </button>
         </div>
         <div style="font-size: 12.5px; margin-top: 8px;">
-          <p style="color: #991b1b; font-weight: 800;">⚠️ ${I18N.t('hazardLabel')} ${hazard}</p>
+          <p style="color: var(--danger); font-weight: 800;">⚠️ ${I18N.t('hazardLabel')} ${hazard}</p>
           <p style="color: var(--text-muted); margin-top: 3px;">${healthRisk}</p>
-          <p style="color: #166534; font-weight: 700; margin-top: 6px;">✅ ${I18N.t('compliantPracticeLabel')} ${safeMethod}</p>
+          <p style="color: var(--primary-dark); font-weight: 700; margin-top: 6px;">✅ ${I18N.t('compliantPracticeLabel')} ${safeMethod}</p>
         </div>
       </div>
     `;
@@ -3280,7 +3300,7 @@ window.openConnectChatModal = async (kabadiwalaId, kabadiwalaName, recyclerId, r
         <button class="modal-close" onclick="closeConnectChatModal()">✕</button>
         <h3 style="font-size: 17px; font-weight: 800; margin-bottom: 4px;">💬 ${otherPartyName}</h3>
         <p style="font-size: 12px; color: var(--text-muted); margin-bottom: 12px;">${I18N.t('directConnectLabel')}</p>
-        <div id="connectChatMessages" style="flex: 1; overflow-y: auto; display: flex; flex-direction: column; gap: 8px; padding: 8px; background: #f8fafc; border-radius: var(--radius-sm); min-height: 200px; max-height: 320px;"></div>
+        <div id="connectChatMessages" style="flex: 1; overflow-y: auto; display: flex; flex-direction: column; gap: 8px; padding: 8px; background: var(--surface-2); border-radius: var(--radius-sm); min-height: 200px; max-height: 320px;"></div>
         <div style="display: flex; gap: 8px; margin-top: 10px;">
           <input type="text" id="connectChatInput" class="form-input" placeholder="${I18N.t('typeMessagePlaceholder')}" style="flex: 1;" onkeydown="if(event.key==='Enter') sendConnectChatMessage('${(myName || '').replace(/'/g, "\\'")}')">
           <button class="btn-primary" style="width: auto; padding: 10px 16px;" onclick="sendConnectChatMessage('${(myName || '').replace(/'/g, "\\'")}')">${I18N.t('sendBtn')}</button>

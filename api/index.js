@@ -12,7 +12,8 @@ const apiRouter = require('../server/api');
 
 const app = express();
 
-app.use(express.json());
+// Larger limit for /api/scan photo uploads (downscaled client-side to ~1MB or less).
+app.use(express.json({ limit: '8mb' }));
 
 let dbReadyPromise = null;
 app.use((req, res, next) => {

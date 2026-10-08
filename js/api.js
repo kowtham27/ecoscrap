@@ -32,10 +32,16 @@ const API = {
 
   updateMaterialRate(materialId, payload) { return this._send('PATCH', `/api/materials/${encodeURIComponent(materialId)}/rate`, payload); },
   updateRecyclerOwnRate(recyclerId, materialId, rate) { return this._send('PATCH', `/api/recyclers/${encodeURIComponent(recyclerId)}/materials/${encodeURIComponent(materialId)}/rate`, { rate }); },
-  getMaterialHistory(materialId) { return this._send('GET', `/api/materials/${encodeURIComponent(materialId)}/history`); },
+  getMaterialHistory(materialId, days) {
+    const qs = days ? `?days=${encodeURIComponent(days)}` : '';
+    return this._send('GET', `/api/materials/${encodeURIComponent(materialId)}/history${qs}`);
+  },
+
+  scanScrapPhoto(imageDataUrl) { return this._send('POST', '/api/scan', { imageDataUrl }); },
 
   createBooking(payload) { return this._send('POST', '/api/bookings', payload); },
-  completeBooking(bookingId) { return this._send('PATCH', `/api/bookings/${encodeURIComponent(bookingId)}/complete`); },
+  // body: { confirmedBy: 'customer' | 'dealer', otp, weighedKg, amountPaid, acceptShortfall, dispute }
+  completeBooking(bookingId, body) { return this._send('PATCH', `/api/bookings/${encodeURIComponent(bookingId)}/complete`, body || {}); },
   listBookings(params) {
     const qs = params ? '?' + new URLSearchParams(params).toString() : '';
     return this._send('GET', `/api/bookings${qs}`);

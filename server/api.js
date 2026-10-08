@@ -3,6 +3,7 @@ const { db } = require('./db');
 const SEED_DATA = require('./seed-data');
 const { sendPriceListSms, broadcastDailyPriceList } = require('./priceNotify');
 const { checkCpcbRegistration } = require('./cpcb-registry');
+const { classifyScrapPhoto, isConfigured: isScannerConfigured, ScanError } = require('./gemini-scan');
 
 const router = express.Router();
 
@@ -90,6 +91,27 @@ function rowToSafetyGuide(row) {
     audioScriptTa: row.audio_script_ta, audioScriptTe: row.audio_script_te, audioScriptKn: row.audio_script_kn, audioScriptMl: row.audio_script_ml
   };
 }
+
+// ---------------------------------------------------------------
+// AI Scrap Scanner — photo in, material + grade out (Gemini, see gemini-scan.js).
+// The photo itself is not stored here; it only gets attached to a booking later as
+// handover proof, the same as before.
+// ---------------------------------------------------------------
+router.get('/scan/status', (req, res) => {
+  res.json({ enabled: isScannerConfigured() });
+});
+
+router.post('/scan', express.json({ limit: '8mb' }), async (req, res) => {
+  try {
+    const materialRows = await db.prepare('SELECT id, symbol, name, description FROM materials').all();
+    const result = await classifyScrapPhoto(req.body && req.body.imageDataUrl, materialRows);
+    res.json(result);
+  } catch (err) {
+    const status = err instanceof ScanError ? err.status : 500;
+    if (!(err instanceof ScanError)) console.error('[scan] unexpected error:', err);
+    res.status(status).json({ error: err.message });
+  }
+});
 
 // ---------------------------------------------------------------
 // GET /api/bootstrap — everything the frontend needs on load
@@ -394,11 +416,13 @@ router.patch('/materials/:id/rate', async (req, res) => {
 // platform's actual lifetime instead of a synthetic/static sparkline.
 // ---------------------------------------------------------------
 router.get('/materials/:id/history', async (req, res) => {
+  const days = Number(req.query.days) || 0;
+  const since = days > 0 ? new Date(Date.now() - days * 24 * 60 * 60 * 1000).toISOString() : '';
   const rows = await db.prepare(
-    'SELECT recycler_rate, customer_rate, recorded_at FROM rate_history WHERE material_id = ? ORDER BY id ASC'
-  ).all(req.params.id);
+    'SELECT recycler_rate, customer_rate, recorded_at, source FROM rate_history WHERE material_id = ? AND recorded_at >= ? ORDER BY recorded_at ASC, id ASC'
+  ).all(req.params.id, since);
   res.json(rows.map((r) => ({
-    recyclerRate: r.recycler_rate, customerRate: r.customer_rate, recordedAt: r.recorded_at
+    recyclerRate: r.recycler_rate, customerRate: r.customer_rate, recordedAt: r.recorded_at, source: r.source || 'live'
   })));
 });
 
@@ -433,9 +457,22 @@ function rowToBooking(row) {
     qualityGrade: row.quality_grade, qualityMultiplier: row.quality_multiplier || 1.0,
     totalAmount: row.total_amount, paymentMode: row.payment_mode, status: row.status,
     gpsLat: row.gps_lat, gpsLng: row.gps_lng, photoDataUrl: row.photo_data_url,
-    pooledLotId: row.pooled_lot_id, createdAt: row.created_at, completedAt: row.completed_at
+    pooledLotId: row.pooled_lot_id, createdAt: row.created_at, completedAt: row.completed_at,
+    paymentStatus: row.payment_status || 'Held',
+    weighedKg: row.weighed_kg, amountPaid: row.amount_paid,
+    paymentFlag: row.payment_flag, confirmedBy: row.confirmed_by
   };
 }
+
+// The handover code is the customer's to give — it's only ever returned to the customer
+// who created the booking, never in the dealer-facing list.
+function rowToCustomerBooking(row) {
+  return { ...rowToBooking(row), handoverOtp: row.handover_otp };
+}
+
+// A payment more than this far below the fair value of the weighed scrap is treated as
+// an underpayment and cannot be released silently.
+const UNDERPAYMENT_TOLERANCE_PCT = 5;
 
 router.get('/bookings', async (req, res) => {
   const { customerPhone, kabadiwalaId, status } = req.query;
@@ -446,7 +483,8 @@ router.get('/bookings', async (req, res) => {
   if (status) { sql += ' AND status = ?'; args.push(status); }
   sql += ' ORDER BY id DESC';
   const rows = await db.prepare(sql).all(...args);
-  res.json(rows.map(rowToBooking));
+  // Only a customer's own lookup (by phone) gets the handover code back.
+  res.json(rows.map(customerPhone && !kabadiwalaId ? rowToCustomerBooking : rowToBooking));
 });
 
 router.post('/bookings', async (req, res) => {
@@ -468,15 +506,18 @@ router.post('/bookings', async (req, res) => {
   const multiplier = Number(qualityMultiplier) > 0 ? Number(qualityMultiplier) : 1.0;
   const totalAmount = weight * material.customer_rate * multiplier;
   const bookingCode = `BOOK-${Math.floor(100000 + Math.random() * 900000)}`;
+  const handoverOtp = String(Math.floor(1000 + Math.random() * 9000));
   const hasGps = typeof gpsLat === 'number' && typeof gpsLng === 'number';
 
   const result = await db.prepare(`
     INSERT INTO customer_bookings (booking_code, customer_phone, customer_name, kabadiwala_id, kabadiwala_name,
       material_id, material_name, symbol, weight_kg, rate_per_kg, quality_grade, quality_multiplier,
-      total_amount, payment_mode, status, gps_lat, gps_lng, photo_data_url, created_at)
+      total_amount, payment_mode, status, gps_lat, gps_lng, photo_data_url, created_at,
+      payment_status, handover_otp)
     VALUES (@bookingCode, @customerPhone, @customerName, @kabadiwalaId, @kabadiwalaName,
       @materialId, @materialName, @symbol, @weightKg, @ratePerKg, @qualityGrade, @qualityMultiplier,
-      @totalAmount, @paymentMode, 'Requested', @gpsLat, @gpsLng, @photoDataUrl, @createdAt)
+      @totalAmount, @paymentMode, 'Requested', @gpsLat, @gpsLng, @photoDataUrl, @createdAt,
+      'Held', @handoverOtp)
   `).run({
     bookingCode, customerPhone: cleanPhone, customerName: customerName || 'Customer',
     kabadiwalaId: kabadiwalaId || '', kabadiwalaName: kabadiwalaName || 'Unknown Collector',
@@ -485,19 +526,61 @@ router.post('/bookings', async (req, res) => {
     qualityGrade: qualityGrade || null, qualityMultiplier: multiplier,
     totalAmount, paymentMode: paymentMode || 'cash',
     gpsLat: hasGps ? gpsLat : null, gpsLng: hasGps ? gpsLng : null,
-    photoDataUrl: photoDataUrl || null, createdAt: new Date().toISOString()
+    photoDataUrl: photoDataUrl || null, createdAt: new Date().toISOString(), handoverOtp
   });
 
   const row = await db.prepare('SELECT * FROM customer_bookings WHERE id = ?').get(result.lastInsertRowid);
-  res.status(201).json(rowToBooking(row));
+  res.status(201).json(rowToCustomerBooking(row));
 });
 
+// Secure Payment to Collector + Fraud/Underpayment Alert.
+// Payment stays 'Held' from booking until handover. The dealer releases it by entering the
+// code the customer gives them once paid; the customer can also confirm from their side.
+// Either way the weighed weight and amount actually paid are checked against the fair
+// value — a short payment returns 409 with the numbers instead of completing, and the
+// customer then either accepts the shortfall or raises a dispute.
 router.patch('/bookings/:id/complete', async (req, res) => {
   const row = await db.prepare('SELECT * FROM customer_bookings WHERE id = ?').get(req.params.id);
   if (!row) return res.status(404).json({ error: 'Booking not found.' });
+  if (row.status !== 'Requested') return res.status(409).json({ error: `Booking is already ${row.status}.` });
 
-  await db.prepare(`UPDATE customer_bookings SET status = 'Completed', completed_at = ? WHERE id = ?`)
-    .run(new Date().toISOString(), req.params.id);
+  const { confirmedBy = 'customer', otp, weighedKg, amountPaid, acceptShortfall, dispute } = req.body || {};
+
+  if (confirmedBy === 'dealer' && row.handover_otp && String(otp || '').trim() !== row.handover_otp) {
+    return res.status(403).json({ error: 'Handover code does not match. Ask the customer for the 4-digit code shown on their booking.' });
+  }
+
+  const weighed = Number(weighedKg) > 0 ? Number(weighedKg) : row.weight_kg;
+  const fairValue = Math.round(weighed * row.rate_per_kg * (row.quality_multiplier || 1));
+  const hasPaid = amountPaid !== undefined && amountPaid !== null && amountPaid !== '' && Number(amountPaid) >= 0;
+  const paid = hasPaid ? Math.round(Number(amountPaid)) : fairValue;
+  const shortfallPct = fairValue > 0 ? Math.round(((fairValue - paid) / fairValue) * 1000) / 10 : 0;
+  const underpaid = shortfallPct > UNDERPAYMENT_TOLERANCE_PCT;
+
+  if (underpaid && !acceptShortfall && !dispute) {
+    return res.status(409).json({
+      error: 'Underpayment detected.',
+      alert: { fairValue, paid, shortfall: fairValue - paid, shortfallPct, weighedKg: weighed, ratePerKg: row.rate_per_kg }
+    });
+  }
+  // A dealer can't wave through their own short payment — only the customer can accept it.
+  if (underpaid && confirmedBy === 'dealer') {
+    return res.status(409).json({ error: 'Only the customer can accept a short payment.' });
+  }
+
+  const status = dispute ? 'Disputed' : 'Completed';
+  const paymentStatus = dispute ? 'Disputed' : 'Released';
+  const flag = underpaid ? (dispute ? 'underpaid' : 'underpaid-accepted') : null;
+
+  await db.prepare(`
+    UPDATE customer_bookings SET status = @status, payment_status = @paymentStatus, payment_flag = @flag,
+      weighed_kg = @weighed, amount_paid = @paid, confirmed_by = @confirmedBy, completed_at = @completedAt
+    WHERE id = @id
+  `).run({
+    status, paymentStatus, flag, weighed, paid,
+    confirmedBy: confirmedBy === 'dealer' ? 'dealer' : 'customer',
+    completedAt: new Date().toISOString(), id: req.params.id
+  });
 
   const updated = await db.prepare('SELECT * FROM customer_bookings WHERE id = ?').get(req.params.id);
   res.json(rowToBooking(updated));
@@ -510,10 +593,10 @@ router.get('/customers/:phone/summary', async (req, res) => {
 
   const totals = await db.prepare(`
     SELECT
-      COALESCE(SUM(b.weight_kg), 0) AS totalWeightSoldKg,
-      COALESCE(SUM(b.total_amount), 0) AS totalCashReceived,
+      COALESCE(SUM(COALESCE(b.weighed_kg, b.weight_kg)), 0) AS totalWeightSoldKg,
+      COALESCE(SUM(COALESCE(b.amount_paid, b.total_amount)), 0) AS totalCashReceived,
       COUNT(*) AS totalPickupsCompleted,
-      COALESCE(SUM(b.weight_kg * COALESCE(m.co2_factor_kg_per_kg, 0)), 0) AS totalCo2PreventedKg
+      COALESCE(SUM(COALESCE(b.weighed_kg, b.weight_kg) * COALESCE(m.co2_factor_kg_per_kg, 0)), 0) AS totalCo2PreventedKg
     FROM customer_bookings b
     LEFT JOIN materials m ON m.id = b.material_id
     WHERE b.customer_phone = ? AND b.status = 'Completed'
@@ -527,14 +610,14 @@ router.get('/customers/:phone/summary', async (req, res) => {
 
   const monthlyRows = await db.prepare(`
     SELECT strftime('%Y-%m', completed_at) AS period,
-      SUM(weight_kg) AS weightKg, COUNT(*) AS pickups, SUM(total_amount) AS earnings
+      SUM(COALESCE(weighed_kg, weight_kg)) AS weightKg, COUNT(*) AS pickups, SUM(COALESCE(amount_paid, total_amount)) AS earnings
     FROM customer_bookings
     WHERE customer_phone = ? AND status = 'Completed'
     GROUP BY period ORDER BY period DESC LIMIT 6
   `).all(phone);
 
   const historyRows = await db.prepare(`
-    SELECT * FROM customer_bookings WHERE customer_phone = ? AND status = 'Completed' ORDER BY completed_at DESC
+    SELECT * FROM customer_bookings WHERE customer_phone = ? AND status IN ('Completed', 'Disputed') ORDER BY completed_at DESC
   `).all(phone);
 
   // Illustrative estimate: a mature tree absorbs roughly 21kg of CO2 per year — used only
